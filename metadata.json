@@ -1,0 +1,6 @@
+{
+  "name": "Moex Pulse",
+  "description": "Real-time MOEX TQBR algorithmic trading terminal with EMA/RSI/ATR quant signals, push notifications, and signal performance history.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
