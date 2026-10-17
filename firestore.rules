@@ -1,0 +1,103 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isNumber(val) {
+      return val is int || val is float;
+    }
+
+    function isValidSignalLogCloud(data, userId) {
+      return data.keys().hasAll([
+               'userId', 'ticker', 'stockName', 'signalType',
+               'entryPrice', 'takeProfit', 'stopLoss', 'confidence',
+               'reason', 'status', 'pnlPercent', 'createdAt', 'updatedAt'
+             ]) &&
+             data.keys().hasOnly([
+               'userId', 'ticker', 'stockName', 'signalType',
+               'entryPrice', 'takeProfit', 'stopLoss', 'confidence',
+               'reason', 'status', 'pnlPercent', 'createdAt', 'updatedAt'
+             ]) &&
+             data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.userId == request.auth.uid && data.userId == userId &&
+             data.ticker is string && data.ticker.size() >= 1 && data.ticker.size() <= 16 &&
+             data.stockName is string && data.stockName.size() >= 1 && data.stockName.size() <= 64 &&
+             data.signalType is string && (data.signalType == 'LONG' || data.signalType == 'SHORT') &&
+             isNumber(data.entryPrice) && data.entryPrice > 0 &&
+             isNumber(data.takeProfit) && data.takeProfit > 0 &&
+             isNumber(data.stopLoss) && data.stopLoss > 0 &&
+             data.confidence is int && data.confidence >= 0 && data.confidence <= 100 &&
+             data.reason is string && data.reason.size() >= 1 && data.reason.size() <= 300 &&
+             data.status is string && (data.status == 'ACTIVE' || data.status == 'HIT_TP' || data.status == 'HIT_SL') &&
+             isNumber(data.pnlPercent) &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidChatMessageCloud(data, userId) {
+      return data.keys().hasAll([
+               'userId', 'role', 'text', 'modelMode',
+               'sourcesSummary', 'createdAt', 'updatedAt'
+             ]) &&
+             data.keys().hasOnly([
+               'userId', 'role', 'text', 'modelMode',
+               'sourcesSummary', 'createdAt', 'updatedAt'
+             ]) &&
+             data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.userId == request.auth.uid && data.userId == userId &&
+             data.role is string && (data.role == 'user' || data.role == 'model') &&
+             data.text is string && data.text.size() >= 1 && data.text.size() <= 8000 &&
+             data.modelMode is string && data.modelMode.size() >= 1 && data.modelMode.size() <= 64 &&
+             data.sourcesSummary is string && data.sourcesSummary.size() <= 2000 &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    match /users/{userId}/signals/{signalId} {
+      allow get: if isOwner(userId) && isValidId(userId) && isValidId(signalId);
+      allow list: if isOwner(userId);
+      allow create: if isOwner(userId) && isValidId(userId) && isValidId(signalId) && isValidSignalLogCloud(incoming(), userId);
+      allow update: if isOwner(userId) && isValidId(userId) && isValidId(signalId) &&
+                       isValidSignalLogCloud(incoming(), userId) &&
+                       incoming().userId == existing().userId &&
+                       incoming().ticker == existing().ticker &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['status', 'pnlPercent', 'updatedAt']);
+      allow delete: if isOwner(userId) && isValidId(userId) && isValidId(signalId);
+    }
+
+    match /users/{userId}/chat_messages/{messageId} {
+      allow get: if isOwner(userId) && isValidId(userId) && isValidId(messageId);
+      allow list: if isOwner(userId);
+      allow create: if isOwner(userId) && isValidId(userId) && isValidId(messageId) && isValidChatMessageCloud(incoming(), userId);
+      allow update: if isOwner(userId) && isValidId(userId) && isValidId(messageId) &&
+                       isValidChatMessageCloud(incoming(), userId) &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['text', 'sourcesSummary', 'updatedAt']);
+      allow delete: if isOwner(userId) && isValidId(userId) && isValidId(messageId);
+    }
+  }
+}

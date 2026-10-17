@@ -1,14 +1,15 @@
-name: Build MOEX Pulse APK
+name: Build MOEX Pulse AI (Android APK + Windows PC EXE)
 
 on:
   push:
-    branches: [ "main", "master" ]
+    branches: [ "*" ]
   pull_request:
-    branches: [ "main", "master" ]
+    branches: [ "*" ]
   workflow_dispatch:
 
 jobs:
-  build:
+  build-android-apk:
+    name: Build Android APK
     runs-on: ubuntu-latest
 
     steps:
@@ -18,28 +19,66 @@ jobs:
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
-          java-version: '17'
           distribution: 'temurin'
+          java-version: '17'
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
       - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v3
+        uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '8.11.1'
+          gradle-version: '8.13'
 
-      - name: Generate Debug Keystore if missing
+      - name: Prepare .env and debug.keystore for CI
         run: |
+          if [ ! -f .env ] && [ -f .env.example ]; then
+            cp .env.example .env
+          fi
           if [ ! -f debug.keystore ]; then
-            keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+            if [ -f debug.keystore.base64 ]; then
+              base64 -d debug.keystore.base64 > debug.keystore
+            else
+              keytool -genkeypair -v -keystore debug.keystore -alias androiddebugkey \
+                -keyalg RSA -keysize 2048 -validity 10000 \
+                -storepass android -keypass android \
+                -dname "CN=Android Debug,O=Android,C=US"
+            fi
           fi
 
       - name: Build Debug APK
-        run: gradle assembleDebug --no-daemon
+        run: gradle assembleDebug --no-daemon --stacktrace
 
-      - name: Upload Debug APK Artifact
+      - name: Upload Ready-to-Install Android APK
         uses: actions/upload-artifact@v4
         with:
-          name: moex-pulse-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: MOEX-Pulse-AI-Android-APK
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+
+  build-windows-exe:
+    name: Build Windows PC (.exe)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install PyInstaller and build MOEX_Pulse_AI_Desktop.exe
+        working-directory: desktop_pc_app
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pyinstaller --noconfirm --onefile --windowed --name "MOEX_Pulse_AI_Desktop" moex_pulse_pc.py
+
+      - name: Upload Standalone Windows PC (.exe)
+        uses: actions/upload-artifact@v4
+        with:
+          name: MOEX-Pulse-AI-Windows-Desktop-EXE
+          path: desktop_pc_app/dist/MOEX_Pulse_AI_Desktop.exe
+          if-no-files-found: error

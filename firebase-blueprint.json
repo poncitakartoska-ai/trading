@@ -1,0 +1,143 @@
+{
+  "entities": {
+    "SignalLogCloud": {
+      "title": "SignalLogCloud",
+      "description": "Cloud-persisted MOEX trading signal record per authenticated user.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "UID of the authenticated owner."
+        },
+        "ticker": {
+          "type": "string",
+          "description": "MOEX stock ticker symbol."
+        },
+        "stockName": {
+          "type": "string",
+          "description": "Display name of the stock."
+        },
+        "signalType": {
+          "type": "string",
+          "enum": ["LONG", "SHORT"],
+          "description": "Signal direction."
+        },
+        "entryPrice": {
+          "type": "number",
+          "description": "Entry price in RUB."
+        },
+        "takeProfit": {
+          "type": "number",
+          "description": "Take Profit target in RUB."
+        },
+        "stopLoss": {
+          "type": "number",
+          "description": "Stop Loss level in RUB."
+        },
+        "confidence": {
+          "type": "integer",
+          "description": "Signal strength percentage 0..100."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Technical indicator rationale."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["ACTIVE", "HIT_TP", "HIT_SL"],
+          "description": "Trade execution outcome."
+        },
+        "pnlPercent": {
+          "type": "number",
+          "description": "Realized profit/loss percentage."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of creation (FieldValue.serverTimestamp())."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of last update (FieldValue.serverTimestamp())."
+        }
+      },
+      "required": [
+        "userId",
+        "ticker",
+        "stockName",
+        "signalType",
+        "entryPrice",
+        "takeProfit",
+        "stopLoss",
+        "confidence",
+        "reason",
+        "status",
+        "pnlPercent",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ChatMessageCloud": {
+      "title": "ChatMessageCloud",
+      "description": "Multi-turn AI Quant Assistant conversation message persisted in Firestore.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "UID of the authenticated user."
+        },
+        "role": {
+          "type": "string",
+          "enum": ["user", "model"],
+          "description": "Author role in conversation."
+        },
+        "text": {
+          "type": "string",
+          "description": "Message body."
+        },
+        "modelMode": {
+          "type": "string",
+          "description": "Selected Gemini model & grounding mode."
+        },
+        "sourcesSummary": {
+          "type": "string",
+          "description": "Grounded citations from Google Search or Google Maps."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of creation (FieldValue.serverTimestamp())."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of update (FieldValue.serverTimestamp())."
+        }
+      },
+      "required": [
+        "userId",
+        "role",
+        "text",
+        "modelMode",
+        "sourcesSummary",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}/signals/{signalId}": {
+      "schema": {
+        "$ref": "#/entities/SignalLogCloud"
+      },
+      "description": "Per-user cloud trading signals and outcome history."
+    },
+    "/users/{userId}/chat_messages/{messageId}": {
+      "schema": {
+        "$ref": "#/entities/ChatMessageCloud"
+      },
+      "description": "Per-user multi-turn AI Quant Chat history."
+    }
+  }
+}

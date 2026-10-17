@@ -1,6 +1,5 @@
 package com.example.service
 
-import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -8,20 +7,19 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.net.Uri
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
-import androidx.core.app.NotificationManagerCompat
-import androidx.core.content.ContextCompat
 import com.example.MainActivity
-import com.example.R
 import com.example.data.AppDatabase
+import com.example.data.AppSettingsManager
+import com.example.data.SignalHistoryDao
 import com.example.data.SignalHistoryEntity
-import com.example.data.SignalHistoryRepository
 import com.example.data.TradeOutcome
 import com.example.quant.MoexIssClient
+import com.example.quant.MoexNewsEngine
 import com.example.quant.QuantSignal
 import com.example.quant.QuantSignalEngine
 import com.example.quant.SignalDirection
@@ -31,292 +29,259 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlin.math.abs
+import kotlin.math.floor
+import kotlin.math.max
 
-object SignalNotificationHelper {
-    const val CHANNEL_SIGNALS_ID = "moex_trading_signals_channel"
-    const val CHANNEL_RADAR_ID = "moex_background_radar_channel"
-    const val RADAR_NOTIFICATION_ID = 9001
+class SignalMonitorService : Service() {
 
-    fun ensureChannels(context: Context) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var monitorJob: Job? = null
+    private val issClient = MoexIssClient()
 
-            val signalChannel = NotificationChannel(
-                CHANNEL_SIGNALS_ID,
-                context.getString(R.string.notification_channel_name),
-                NotificationManager.IMPORTANCE_HIGH
-            ).apply {
-                description = context.getString(R.string.notification_channel_desc)
-                enableVibration(true)
+    override fun onCreate() {
+        super.onCreate()
+        createNotificationChannels()
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_STOP) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
+        val monitorNotification = buildForegroundMonitorNotification(
+            statusText = "Quant 2.0 (7 факторов + Новости): мониторинг 15 акций MOEX TQBR"
+        )
+
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                startForeground(
+                    FOREGROUND_NOTIFICATION_ID,
+                    monitorNotification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+                )
+            } else {
+                startForeground(FOREGROUND_NOTIFICATION_ID, monitorNotification)
             }
+        } catch (_: Exception) {
+        }
 
-            val radarChannel = NotificationChannel(
-                CHANNEL_RADAR_ID,
-                "MOEX Фоновый Радар",
+        startBackgroundLoopIfNeeded()
+        return START_STICKY
+    }
+
+    private fun startBackgroundLoopIfNeeded() {
+        if (monitorJob?.isActive == true) return
+        val dao = AppDatabase.getInstance(applicationContext).signalHistoryDao()
+        AppSettingsManager.ensureInitialized(applicationContext)
+
+        monitorJob = serviceScope.launch {
+            while (isActive) {
+                val currentSettings = AppSettingsManager.settings.value
+                try {
+                    val newsOverview = if (currentSettings.useNewsSentimentFilter) {
+                        MoexNewsEngine.fetchNewsAndSentiment(emptyList())
+                    } else {
+                        null
+                    }
+                    val signals = issClient.fetchAllStockSignals(
+                        settings = currentSettings,
+                        tickerNewsMap = newsOverview?.tickerIntelligence.orEmpty()
+                    )
+                    if (signals.isNotEmpty()) {
+                        processAndNotifySignals(
+                            context = applicationContext,
+                            dao = dao,
+                            signals = signals,
+                            riskAmountRub = 1500.0
+                        )
+                        val activeCount = signals.count {
+                            it.direction == SignalDirection.LONG || it.direction == SignalDirection.SHORT
+                        }
+                        val updatedTime = signals.firstOrNull()?.updateTime ?: "--:--:--"
+                        updateForegroundStatus(
+                            "MOEX $updatedTime • Сигналов Quant 2.0: $activeCount из ${signals.size}"
+                        )
+                    }
+                } catch (_: Exception) {
+                }
+                val intervalMs = (currentSettings.pollIntervalSeconds.coerceIn(5, 60) * 1000L)
+                delay(intervalMs)
+            }
+        }
+    }
+
+    private fun createNotificationChannels() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
+            val monitorChannel = NotificationChannel(
+                CHANNEL_MONITOR_ID,
+                "MOEX Фоновый Мониторинг",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
-                description = "Непрерывный мониторинг котировок Мосбиржи в фоне"
+                description = "Непрерывный фоновый опрос котировок Мосбиржи (ISS API)"
                 setShowBadge(false)
             }
 
-            manager.createNotificationChannel(signalChannel)
-            manager.createNotificationChannel(radarChannel)
+            val alertChannel = NotificationChannel(
+                CHANNEL_ALERTS_ID,
+                "Торговые сигналы LONG / SHORT",
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Мгновенные push-уведомления о новых сигналах Quant 2.0 с прямой ссылкой на TradingView"
+                enableVibration(true)
+            }
+
+            nm.createNotificationChannel(monitorChannel)
+            nm.createNotificationChannel(alertChannel)
         }
     }
 
-    fun hasNotificationPermission(context: Context): Boolean {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            ContextCompat.checkSelfPermission(
-                context,
-                Manifest.permission.POST_NOTIFICATIONS
-            ) == PackageManager.PERMISSION_GRANTED
-        } else {
-            true
-        }
-    }
-
-    fun notifyNewTradingSignal(context: Context, signal: QuantSignal) {
-        if (!hasNotificationPermission(context)) return
-        ensureChannels(context)
-
-        val emoji = if (signal.direction == SignalDirection.LONG) "🟢 LONG" else "🔴 SHORT"
-        val entryFormatted = QuantSignalEngine.formatPrice(signal.entryPrice, signal.minStep)
-        val tpFormatted = QuantSignalEngine.formatPrice(signal.takeProfit, signal.minStep)
-        val slFormatted = QuantSignalEngine.formatPrice(signal.stopLoss, signal.minStep)
-        val tpPctStr = QuantSignalEngine.formatSignedPercent(abs(signal.tpPercent))
-        val slPctStr = "-${String.format(java.util.Locale.US, "%.2f", abs(signal.slPercent))}%"
-
-        val title = "$emoji СИГНАЛ • ${signal.ticker} (${signal.name})"
-        val shortSummary = "Вход: $entryFormatted ₽ • TP: $tpFormatted ₽ ($tpPctStr) • SL: $slFormatted ₽ ($slPctStr)"
-        val bigText = buildString {
-            appendLine("Направление: $emoji (Сила сигнала: ${signal.confidence}%)")
-            appendLine("Точка входа (Entry): $entryFormatted ₽")
-            appendLine("Тейк-профит (TP): $tpFormatted ₽ ($tpPctStr)")
-            appendLine("Стоп-лосс (SL): $slFormatted ₽ ($slPctStr)")
-            append("Причина: ${signal.reason}")
-        }
-
-        val tapIntent = Intent(context, MainActivity::class.java).apply {
+    private fun buildForegroundMonitorNotification(statusText: String): Notification {
+        val openIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            putExtra("highlight_ticker", signal.ticker)
         }
-        val pendingIntent = PendingIntent.getActivity(
-            context,
-            signal.ticker.hashCode(),
-            tapIntent,
+        val pendingOpen = PendingIntent.getActivity(
+            this,
+            100,
+            openIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val notification = NotificationCompat.Builder(context, CHANNEL_SIGNALS_ID)
+        return NotificationCompat.Builder(this, CHANNEL_MONITOR_ID)
             .setSmallIcon(android.R.drawable.ic_dialog_info)
-            .setContentTitle(title)
-            .setContentText(shortSummary)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(bigText))
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .setCategory(NotificationCompat.CATEGORY_ALARM)
-            .setAutoCancel(true)
-            .setContentIntent(pendingIntent)
-            .build()
-
-        try {
-            NotificationManagerCompat.from(context).notify(
-                (signal.ticker.hashCode() and 0x7FFFFFFF) + 1000,
-                notification
-            )
-        } catch (_: SecurityException) {
-            // Ignored if permission was revoked
-        }
-    }
-
-    fun buildRadarForegroundNotification(context: Context, activeSignalsCount: Int): Notification {
-        ensureChannels(context)
-        val tapIntent = Intent(context, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
-        }
-        val pendingIntent = PendingIntent.getActivity(
-            context,
-            0,
-            tapIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
-        return NotificationCompat.Builder(context, CHANNEL_RADAR_ID)
-            .setSmallIcon(android.R.drawable.ic_popup_sync)
-            .setContentTitle(context.getString(R.string.service_notification_title))
-            .setContentText("Опрос MOEX ISS каждые 10 сек • Активных сигналов: $activeSignalsCount")
+            .setContentTitle("MOEX Pulse AI • Quant 2.0 Активен")
+            .setContentText(statusText)
             .setOngoing(true)
+            .setOnlyAlertOnce(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
-            .setContentIntent(pendingIntent)
+            .setContentIntent(pendingOpen)
             .build()
     }
-}
 
-object SignalEngineCoordinator {
-    private val client = MoexIssClient()
-    private val pollMutex = Mutex()
-    private var initialBackfillCompleted = false
-
-    private val _signals = MutableStateFlow<List<QuantSignal>>(emptyList())
-    val signals: StateFlow<List<QuantSignal>> = _signals.asStateFlow()
-
-    private val _isLoading = MutableStateFlow(true)
-    val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
-
-    private val _lastSyncTimestamp = MutableStateFlow(0L)
-    val lastSyncTimestamp: StateFlow<Long> = _lastSyncTimestamp.asStateFlow()
-
-    private val _errorMessage = MutableStateFlow<String?>(null)
-    val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
-
-    private val _isBackgroundRadarEnabled = MutableStateFlow(false)
-    val isBackgroundRadarEnabled: StateFlow<Boolean> = _isBackgroundRadarEnabled.asStateFlow()
-
-    fun setBackgroundRadarEnabled(enabled: Boolean) {
-        _isBackgroundRadarEnabled.value = enabled
+    private fun updateForegroundStatus(statusText: String) {
+        try {
+            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            nm.notify(FOREGROUND_NOTIFICATION_ID, buildForegroundMonitorNotification(statusText))
+        } catch (_: Exception) {
+        }
     }
 
-    suspend fun pollOnceAndProcess(
-        appContext: Context,
-        sendNotificationsForNewSignals: Boolean = true
-    ): List<QuantSignal> {
-        return pollMutex.withLock {
-            val db = AppDatabase.getInstance(appContext)
-            val repo = SignalHistoryRepository(db.signalHistoryDao())
+    override fun onDestroy() {
+        monitorJob?.cancel()
+        serviceScope.cancel()
+        super.onDestroy()
+    }
 
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    companion object {
+        const val CHANNEL_MONITOR_ID = "moex_pulse_monitor_channel"
+        const val CHANNEL_ALERTS_ID = "moex_pulse_signal_alerts_channel"
+        private const val FOREGROUND_NOTIFICATION_ID = 9001
+        private const val ACTION_STOP = "com.example.service.STOP_MONITOR"
+
+        fun startServiceSafely(context: Context) {
             try {
-                if (_signals.value.isEmpty()) {
-                    _isLoading.value = true
+                val intent = Intent(context, SignalMonitorService::class.java)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
                 }
-                val fetched = client.fetchAllStockSignals()
-                if (fetched.isNotEmpty()) {
-                    processSignalsAndHistory(
-                        appContext = appContext,
-                        repo = repo,
-                        freshSignals = fetched,
-                        notifyUser = sendNotificationsForNewSignals
-                    )
-                    _signals.value = fetched
-                    _lastSyncTimestamp.value = System.currentTimeMillis()
-                    _errorMessage.value = null
-                } else if (_signals.value.isEmpty()) {
-                    _errorMessage.value = "Ожидание ответа от сервера MOEX ISS..."
-                }
-                _isLoading.value = false
-                _signals.value
-            } catch (e: Exception) {
-                _isLoading.value = false
-                _errorMessage.value = "Ошибка соединения с MOEX ISS: ${e.localizedMessage ?: "Проверьте сеть"}"
-                _signals.value
-            }
-        }
-    }
-
-    private suspend fun processSignalsAndHistory(
-        appContext: Context,
-        repo: SignalHistoryRepository,
-        freshSignals: List<QuantSignal>,
-        notifyUser: Boolean
-    ) {
-        val now = System.currentTimeMillis()
-        val existingAll = repo.getAllOnce()
-        val isFirstSeed = !initialBackfillCompleted && existingAll.isEmpty()
-
-        // 1. If database is empty on first launch, backfill historical signals from real MOEX candles
-        if (!initialBackfillCompleted) {
-            initialBackfillCompleted = true
-            if (existingAll.isEmpty()) {
-                val historicalEntities = mutableListOf<SignalHistoryEntity>()
-                for (sig in freshSignals) {
-                    val meta = QuantSignalEngine.TOP_MOEX_STOCKS.firstOrNull { it.ticker == sig.ticker }
-                        ?: continue
-                    if (sig.recentCandles.size >= 25) {
-                        val scanned = QuantSignalEngine.scanHistoricalSignalsFromCandles(
-                            meta = meta,
-                            candles = sig.recentCandles,
-                            minStep = sig.minStep
-                        )
-                        historicalEntities.addAll(scanned)
-                    }
-                }
-                if (historicalEntities.isNotEmpty()) {
-                    repo.insertSignals(historicalEntities)
-                }
+            } catch (_: Exception) {
             }
         }
 
-        // 2. Evaluate all currently ACTIVE signals against live price and latest candle high/low
-        for (sig in freshSignals) {
-            val activeForTicker = repo.getActiveSignalsForTicker(sig.ticker)
-            val latestCandle = sig.recentCandles.lastOrNull()
-            val checkHigh = maxOf(sig.currentPrice, latestCandle?.high ?: sig.currentPrice)
-            val checkLow = minOf(sig.currentPrice, latestCandle?.low ?: sig.currentPrice)
+        suspend fun processAndNotifySignals(
+            context: Context,
+            dao: SignalHistoryDao,
+            signals: List<QuantSignal>,
+            riskAmountRub: Double = 1500.0
+        ): List<SignalHistoryEntity> {
+            val nowMs = System.currentTimeMillis()
+            val newlyLoggedEntities = mutableListOf<SignalHistoryEntity>()
 
-            for (activeTrade in activeForTicker) {
-                if (activeTrade.signalType == SignalDirection.LONG.name) {
-                    if (checkLow <= activeTrade.stopLoss) {
-                        val pnl = ((activeTrade.stopLoss - activeTrade.entryPrice) / activeTrade.entryPrice) * 100.0
-                        repo.updateSignal(
-                            activeTrade.copy(
-                                status = TradeOutcome.HIT_SL.code,
-                                exitPrice = activeTrade.stopLoss,
-                                resolvedAt = now,
-                                pnlPercent = pnl
+            val allRecords = dao.getAllHistoryOnce()
+            val openSignals = allRecords.filter { it.status == TradeOutcome.ACTIVE.code }
+            val signalByTicker = signals.associateBy { it.ticker }
+
+            for (openRecord in openSignals) {
+                val live = signalByTicker[openRecord.ticker] ?: continue
+                val currentPrice = live.currentPrice
+                if (currentPrice <= 0.0) continue
+
+                if (openRecord.signalType == "LONG") {
+                    if (currentPrice >= openRecord.takeProfit) {
+                        val movePct = ((openRecord.takeProfit - openRecord.entryPrice) / openRecord.entryPrice) * 100.0
+                        dao.updateSignal(
+                            openRecord.copy(
+                                status = TradeOutcome.HIT_TP.code,
+                                exitPrice = openRecord.takeProfit,
+                                resolvedAt = nowMs,
+                                pnlPercent = movePct
                             )
                         )
-                    } else if (checkHigh >= activeTrade.takeProfit) {
-                        val pnl = ((activeTrade.takeProfit - activeTrade.entryPrice) / activeTrade.entryPrice) * 100.0
-                        repo.updateSignal(
-                            activeTrade.copy(
-                                status = TradeOutcome.HIT_TP.code,
-                                exitPrice = activeTrade.takeProfit,
-                                resolvedAt = now,
-                                pnlPercent = pnl
+                    } else if (currentPrice <= openRecord.stopLoss) {
+                        val movePct = ((openRecord.stopLoss - openRecord.entryPrice) / openRecord.entryPrice) * 100.0
+                        dao.updateSignal(
+                            openRecord.copy(
+                                status = TradeOutcome.HIT_SL.code,
+                                exitPrice = openRecord.stopLoss,
+                                resolvedAt = nowMs,
+                                pnlPercent = movePct
                             )
                         )
                     }
-                } else if (activeTrade.signalType == SignalDirection.SHORT.name) {
-                    if (checkHigh >= activeTrade.stopLoss) {
-                        val pnl = -(((activeTrade.stopLoss - activeTrade.entryPrice) / activeTrade.entryPrice) * 100.0)
-                        repo.updateSignal(
-                            activeTrade.copy(
-                                status = TradeOutcome.HIT_SL.code,
-                                exitPrice = activeTrade.stopLoss,
-                                resolvedAt = now,
-                                pnlPercent = pnl
+                } else if (openRecord.signalType == "SHORT") {
+                    if (currentPrice <= openRecord.takeProfit) {
+                        val movePct = ((openRecord.entryPrice - openRecord.takeProfit) / openRecord.entryPrice) * 100.0
+                        dao.updateSignal(
+                            openRecord.copy(
+                                status = TradeOutcome.HIT_TP.code,
+                                exitPrice = openRecord.takeProfit,
+                                resolvedAt = nowMs,
+                                pnlPercent = movePct
                             )
                         )
-                    } else if (checkLow <= activeTrade.takeProfit) {
-                        val pnl = ((activeTrade.entryPrice - activeTrade.takeProfit) / activeTrade.entryPrice) * 100.0
-                        repo.updateSignal(
-                            activeTrade.copy(
-                                status = TradeOutcome.HIT_TP.code,
-                                exitPrice = activeTrade.takeProfit,
-                                resolvedAt = now,
-                                pnlPercent = pnl
+                    } else if (currentPrice >= openRecord.stopLoss) {
+                        val movePct = -(((openRecord.stopLoss - openRecord.entryPrice) / openRecord.entryPrice) * 100.0)
+                        dao.updateSignal(
+                            openRecord.copy(
+                                status = TradeOutcome.HIT_SL.code,
+                                exitPrice = openRecord.stopLoss,
+                                resolvedAt = nowMs,
+                                pnlPercent = movePct
                             )
                         )
                     }
                 }
             }
 
-            // 3. Log newly generated LONG or SHORT signal if not already active or duplicated
-            if (sig.direction == SignalDirection.LONG || sig.direction == SignalDirection.SHORT) {
-                val latestRecorded = repo.getLatestSignalForTicker(sig.ticker)
-                val isDuplicateActive = latestRecorded != null &&
-                    latestRecorded.signalType == sig.direction.name &&
-                    (latestRecorded.status == TradeOutcome.ACTIVE.code ||
-                        abs(now - latestRecorded.timestamp) < 15 * 60 * 1000L &&
-                        abs(latestRecorded.entryPrice - sig.entryPrice) / sig.entryPrice < 0.004)
+            val remainingOpenTickers = dao.getAllHistoryOnce()
+                .filter { it.status == TradeOutcome.ACTIVE.code }
+                .map { it.ticker }
+                .toSet()
 
-                if (!isDuplicateActive) {
+            for (sig in signals) {
+                if (sig.direction != SignalDirection.LONG && sig.direction != SignalDirection.SHORT) {
+                    continue
+                }
+                if (sig.ticker in remainingOpenTickers) {
+                    continue
+                }
+
+                val latestForTicker = dao.getLatestSignalForTicker(sig.ticker)
+                val cooldownExpired = latestForTicker == null ||
+                    (nowMs - latestForTicker.timestamp) > 15 * 60 * 1000L ||
+                    latestForTicker.signalType != sig.direction.name
+
+                if (cooldownExpired) {
                     val entity = SignalHistoryEntity(
                         ticker = sig.ticker,
                         stockName = sig.name,
@@ -328,140 +293,117 @@ object SignalEngineCoordinator {
                         reason = sig.reason,
                         rsi = sig.rsi14,
                         atr = sig.atr14,
-                        timestamp = now,
+                        timestamp = nowMs,
                         status = TradeOutcome.ACTIVE.code,
                         exitPrice = null,
                         resolvedAt = null,
                         pnlPercent = 0.0
                     )
-                    repo.insertSignal(entity)
-
-                    if (notifyUser && !isFirstSeed) {
-                        SignalNotificationHelper.notifyNewTradingSignal(appContext, sig)
-                    }
-                }
-            }
-        }
-
-        // If on first launch the user has notifications enabled, notify the top active signal once
-        if (isFirstSeed && notifyUser) {
-            val topSignal = freshSignals.firstOrNull {
-                it.direction == SignalDirection.LONG || it.direction == SignalDirection.SHORT
-            }
-            if (topSignal != null) {
-                SignalNotificationHelper.notifyNewTradingSignal(appContext, topSignal)
-            }
-        }
-    }
-}
-
-class SignalMonitorService : Service() {
-    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private var pollingJob: Job? = null
-
-    override fun onCreate() {
-        super.onCreate()
-        SignalNotificationHelper.ensureChannels(this)
-    }
-
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP_RADAR) {
-            SignalEngineCoordinator.setBackgroundRadarEnabled(false)
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
-            return START_NOT_STICKY
-        }
-
-        SignalEngineCoordinator.setBackgroundRadarEnabled(true)
-        val activeCount = SignalEngineCoordinator.signals.value.count {
-            it.direction == SignalDirection.LONG || it.direction == SignalDirection.SHORT
-        }
-        val notification = SignalNotificationHelper.buildRadarForegroundNotification(this, activeCount)
-
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                startForeground(
-                    SignalNotificationHelper.RADAR_NOTIFICATION_ID,
-                    notification,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
-                )
-            } else {
-                startForeground(SignalNotificationHelper.RADAR_NOTIFICATION_ID, notification)
-            }
-        } catch (_: Exception) {
-            // Continue polling in service scope even if foreground promotion is restricted
-        }
-
-        if (pollingJob?.isActive != true) {
-            pollingJob = serviceScope.launch {
-                while (isActive) {
-                    val list = SignalEngineCoordinator.pollOnceAndProcess(
-                        appContext = applicationContext,
-                        sendNotificationsForNewSignals = true
+                    val insertedId = dao.insertSignal(entity)
+                    newlyLoggedEntities.add(entity.copy(id = insertedId))
+                    sendNewSignalPushNotification(
+                        context = context,
+                        signal = sig,
+                        notificationId = insertedId.toInt(),
+                        riskAmountRub = riskAmountRub
                     )
-                    val liveCount = list.count {
-                        it.direction == SignalDirection.LONG || it.direction == SignalDirection.SHORT
-                    }
-                    if (SignalNotificationHelper.hasNotificationPermission(applicationContext)) {
-                        try {
-                            val updatedNotification = SignalNotificationHelper.buildRadarForegroundNotification(
-                                applicationContext,
-                                liveCount
-                            )
-                            NotificationManagerCompat.from(applicationContext).notify(
-                                SignalNotificationHelper.RADAR_NOTIFICATION_ID,
-                                updatedNotification
-                            )
-                        } catch (_: SecurityException) {
-                        }
-                    }
-                    delay(10_000L)
                 }
             }
+            return newlyLoggedEntities
         }
 
-        return START_STICKY
-    }
-
-    override fun onDestroy() {
-        pollingJob?.cancel()
-        serviceScope.cancel()
-        SignalEngineCoordinator.setBackgroundRadarEnabled(false)
-        super.onDestroy()
-    }
-
-    override fun onBind(intent: Intent?): IBinder? = null
-
-    companion object {
-        const val ACTION_START_RADAR = "com.example.action.START_RADAR"
-        const val ACTION_STOP_RADAR = "com.example.action.STOP_RADAR"
-
-        fun startRadar(context: Context) {
-            val intent = Intent(context, SignalMonitorService::class.java).apply {
-                action = ACTION_START_RADAR
-            }
+        fun sendNewSignalPushNotification(
+            context: Context,
+            signal: QuantSignal,
+            notificationId: Int,
+            riskAmountRub: Double = 1500.0
+        ) {
             try {
+                val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    ContextCompat.startForegroundService(context, intent)
-                } else {
-                    context.startService(intent)
+                    val existing = nm.getNotificationChannel(CHANNEL_ALERTS_ID)
+                    if (existing == null) {
+                        val alertChannel = NotificationChannel(
+                            CHANNEL_ALERTS_ID,
+                            "Торговые сигналы LONG / SHORT",
+                            NotificationManager.IMPORTANCE_HIGH
+                        ).apply {
+                            description = "Мгновенные push-уведомления о новых сигналах Quant 2.0"
+                            enableVibration(true)
+                        }
+                        nm.createNotificationChannel(alertChannel)
+                    }
                 }
-            } catch (_: Exception) {
-                try {
-                    context.startService(intent)
-                } catch (_: Exception) {
-                }
-            }
-        }
 
-        fun stopRadar(context: Context) {
-            val intent = Intent(context, SignalMonitorService::class.java).apply {
-                action = ACTION_STOP_RADAR
-            }
-            try {
-                context.startService(intent)
+                val stopDistancePerShare = abs(signal.entryPrice - signal.stopLoss)
+                val rewardDistancePerShare = abs(signal.takeProfit - signal.entryPrice)
+                val riskPerLot = stopDistancePerShare * signal.lotSize
+                val lots = if (riskPerLot > 0.0) max(1, floor(riskAmountRub / riskPerLot).toInt()) else 1
+
+                val potentialProfitRub = rewardDistancePerShare * signal.lotSize * lots
+                val potentialLossRub = stopDistancePerShare * signal.lotSize * lots
+                val potentialProfitPct = if (signal.entryPrice > 0.0) {
+                    (rewardDistancePerShare / signal.entryPrice) * 100.0
+                } else 0.0
+                val potentialLossPct = if (signal.entryPrice > 0.0) {
+                    (stopDistancePerShare / signal.entryPrice) * 100.0
+                } else 0.0
+
+                val entryStr = QuantSignalEngine.formatPrice(signal.entryPrice, signal.minStep)
+                val tpStr = QuantSignalEngine.formatPrice(signal.takeProfit, signal.minStep)
+                val slStr = QuantSignalEngine.formatPrice(signal.stopLoss, signal.minStep)
+                val profitRubStr = String.format(java.util.Locale.US, "%.0f", potentialProfitRub)
+                val lossRubStr = String.format(java.util.Locale.US, "%.0f", potentialLossRub)
+                val profitPctStr = QuantSignalEngine.formatSignedPercent(potentialProfitPct)
+                val lossPctStr = QuantSignalEngine.formatSignedPercent(-potentialLossPct)
+
+                val title = "${signal.direction.badgeText} • ${signal.ticker} (${signal.name}) • ${signal.confidence}% (${signal.confluencePassedCount}/7)"
+                val shortBody = "Вход: $entryStr ₽ | TP: $tpStr ₽ ($profitPctStr) | SL: $slStr ₽"
+                val expandedBody = buildString {
+                    appendLine("Точка входа (Entry): $entryStr ₽")
+                    appendLine("Тейк-профит (TP): $tpStr ₽ (Профит: +$profitRubStr ₽ / $profitPctStr)")
+                    appendLine("Стоп-лосс (SL): $slStr ₽ (Риск: -$lossRubStr ₽ / $lossPctStr)")
+                    appendLine("График TradingView: ${signal.tradingViewUrl}")
+                    append("Конфлюэнс Quant 2.0 (${signal.confluencePassedCount}/7): ${signal.reason}")
+                }
+
+                val openIntent = Intent(context, MainActivity::class.java).apply {
+                    flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                    putExtra("highlight_ticker", signal.ticker)
+                }
+                val pendingOpen = PendingIntent.getActivity(
+                    context,
+                    2000 + notificationId,
+                    openIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+
+                val tvIntent = Intent(Intent.ACTION_VIEW, Uri.parse(signal.tradingViewUrl))
+                val pendingTv = PendingIntent.getActivity(
+                    context,
+                    4000 + notificationId,
+                    tvIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+
+                val notification = NotificationCompat.Builder(context, CHANNEL_ALERTS_ID)
+                    .setSmallIcon(android.R.drawable.stat_sys_warning)
+                    .setContentTitle(title)
+                    .setContentText(shortBody)
+                    .setStyle(NotificationCompat.BigTextStyle().bigText(expandedBody))
+                    .setPriority(NotificationCompat.PRIORITY_HIGH)
+                    .setAutoCancel(true)
+                    .setContentIntent(pendingOpen)
+                    .addAction(
+                        android.R.drawable.ic_menu_view,
+                        "График TradingView ↗",
+                        pendingTv
+                    )
+                    .build()
+
+                nm.notify(3000 + (notificationId % 500), notification)
             } catch (_: Exception) {
-                context.stopService(Intent(context, SignalMonitorService::class.java))
             }
         }
     }

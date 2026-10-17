@@ -1,6 +1,7 @@
 package com.example
 
 import android.Manifest
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -9,265 +10,271 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Calculate
-import androidx.compose.material.icons.filled.History
-import androidx.compose.material.icons.filled.NotificationsActive
-import androidx.compose.material.icons.filled.NotificationsNone
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.TrendingUp
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
+import androidx.credentials.CredentialManager
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.data.AppSettings
+import com.example.data.AppThemeMode
+import com.example.data.TradeOutcome
 import com.example.quant.SignalDirection
 import com.example.service.SignalMonitorService
-import com.example.service.SignalNotificationHelper
+import com.example.ui.AiQuantChatScreen
+import com.example.ui.AuthGateScreen
+import com.example.ui.FilterBar
+import com.example.ui.NewsFeedScreen
+import com.example.ui.PositionCalculatorSheet
 import com.example.ui.PulseViewModel
+import com.example.ui.SettingsAndPcScreen
 import com.example.ui.SignalCard
+import com.example.ui.SignalFilter
 import com.example.ui.SignalHistoryScreen
-import com.example.ui.TerminalFilterMode
-import com.example.ui.theme.MyApplicationTheme
-import com.example.ui.theme.SignalLong
-import com.example.ui.theme.SignalLongDim
-import com.example.ui.theme.SignalShort
-import com.example.ui.theme.SignalWait
-import com.example.ui.theme.SignalWaitDim
-import com.example.ui.theme.TerminalBg
-import com.example.ui.theme.TerminalBorder
-import com.example.ui.theme.TerminalCyan
-import com.example.ui.theme.TerminalSurface
-import com.example.ui.theme.TerminalSurfaceElevated
-import com.example.ui.theme.TerminalTextMuted
-import com.example.ui.theme.TerminalTextPrimary
-import com.example.ui.theme.TerminalTextSecondary
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
+import com.example.ui.TerminalHeaderBar
+import com.example.ui.TerminalTab
+import com.example.ui.TerminalTabSwitcher
+import com.example.ui.signOutFromGoogle
+import com.example.ui.theme.JetBrainsMonoFontFamily
+import com.example.ui.theme.LocalAppPalette
+import com.example.ui.theme.MoexPulseTheme
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        SignalNotificationHelper.ensureChannels(this)
         setContent {
-            MyApplicationTheme {
-                MoexPulseApp()
-            }
-        }
-    }
+            val pulseViewModel: PulseViewModel = viewModel()
+            val settings by pulseViewModel.appSettings.collectAsStateWithLifecycle()
 
-    override fun onStop() {
-        super.onStop()
-        // Keep background monitoring alive when app goes to background if notification permission is granted
-        if (SignalNotificationHelper.hasNotificationPermission(this)) {
-            SignalMonitorService.startRadar(this)
+            MoexPulseTheme(themeMode = settings.themeMode) {
+                MoexPulseTerminalScreen(
+                    viewModel = pulseViewModel,
+                    settings = settings
+                )
+            }
         }
     }
 }
 
 @Composable
-fun MoexPulseApp(viewModel: PulseViewModel = viewModel()) {
+fun MoexPulseTerminalScreen(
+    viewModel: PulseViewModel,
+    settings: AppSettings
+) {
+    val palette = LocalAppPalette.current
+    val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val historyList by viewModel.signalHistory.collectAsStateWithLifecycle()
+    val chatMessages by viewModel.cloudChatMessages.collectAsStateWithLifecycle()
     val context = LocalContext.current
-    val signals by viewModel.signals.collectAsStateWithLifecycle()
-    val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
-    val lastSyncTimestamp by viewModel.lastSyncTimestamp.collectAsStateWithLifecycle()
-    val errorMessage by viewModel.errorMessage.collectAsStateWithLifecycle()
-    val secondsToNext by viewModel.secondsUntilNextScan.collectAsStateWithLifecycle()
-    val filterMode by viewModel.filterMode.collectAsStateWithLifecycle()
-    val historyOutcomeFilter by viewModel.historyOutcomeFilter.collectAsStateWithLifecycle()
-    val selectedHistoryTicker by viewModel.selectedHistoryTicker.collectAsStateWithLifecycle()
-    val expandedTickers by viewModel.expandedTickers.collectAsStateWithLifecycle()
-    val allHistory by viewModel.allHistory.collectAsStateWithLifecycle()
-    val performanceSummary by viewModel.performanceSummary.collectAsStateWithLifecycle()
-    val depositInput by viewModel.depositRubInput.collectAsStateWithLifecycle()
-    val riskPercentInput by viewModel.riskPercentInput.collectAsStateWithLifecycle()
-    val isRadarEnabled by viewModel.isBackgroundRadarEnabled.collectAsStateWithLifecycle()
+    val scope = rememberCoroutineScope()
+    val credentialManager = remember { CredentialManager.create(context) }
 
-    var hasNotifPerm by remember {
-        mutableStateOf(SignalNotificationHelper.hasNotificationPermission(context))
+    var notificationsGranted by remember {
+        mutableStateOf(
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.POST_NOTIFICATIONS
+                ) == PackageManager.PERMISSION_GRANTED
+            } else {
+                true
+            }
+        )
     }
 
-    val permissionLauncher = rememberLauncherForActivityResult(
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { granted ->
-        hasNotifPerm = granted
+        notificationsGranted = granted
         if (granted) {
-            viewModel.startBackgroundRadar()
-            viewModel.sendLatestSignalNotificationNow()
+            SignalMonitorService.startServiceSafely(context)
         }
     }
 
     LaunchedEffect(Unit) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !hasNotifPerm) {
-            permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-        } else if (hasNotifPerm) {
-            viewModel.startBackgroundRadar()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !notificationsGranted) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            SignalMonitorService.startServiceSafely(context)
         }
     }
 
-    if (filterMode != TerminalFilterMode.ALL) {
+    if (state.selectedTab != TerminalTab.LIVE_SIGNALS) {
         BackHandler {
-            viewModel.setFilterMode(TerminalFilterMode.ALL)
+            viewModel.selectTab(TerminalTab.LIVE_SIGNALS)
         }
     }
 
-    val depositRub = depositInput.toDoubleOrNull()?.coerceAtLeast(1000.0) ?: 100_000.0
-    val riskPercent = riskPercentInput.toDoubleOrNull()?.coerceIn(0.1, 25.0) ?: 1.0
-
-    val activeSignalsCount = signals.count {
-        it.direction == SignalDirection.LONG || it.direction == SignalDirection.SHORT
+    if (!state.isAuthenticated) {
+        AuthGateScreen(
+            onAuthSuccess = { viewModel.onAuthStateChanged() }
+        )
+        return
     }
-    val historyByTicker = remember(allHistory) {
-        allHistory.groupBy { it.ticker }
+
+    val longCount = remember(state.signals) {
+        state.signals.count { it.direction == SignalDirection.LONG }
+    }
+    val shortCount = remember(state.signals) {
+        state.signals.count { it.direction == SignalDirection.SHORT }
+    }
+    val waitCount = remember(state.signals) {
+        state.signals.count { it.direction == SignalDirection.WAIT }
+    }
+
+    val filteredSignals = remember(state.signals, state.selectedFilter) {
+        when (state.selectedFilter) {
+            SignalFilter.ALL -> state.signals
+            SignalFilter.ACTIVE -> state.signals.filter {
+                it.direction == SignalDirection.LONG || it.direction == SignalDirection.SHORT
+            }
+            SignalFilter.LONG -> state.signals.filter { it.direction == SignalDirection.LONG }
+            SignalFilter.SHORT -> state.signals.filter { it.direction == SignalDirection.SHORT }
+            SignalFilter.WAIT -> state.signals.filter { it.direction == SignalDirection.WAIT }
+        }
+    }
+
+    val historyByTicker = remember(historyList) {
+        historyList.groupBy { it.ticker }
+    }
+    val resolvedHistory = remember(historyList) {
+        historyList.filter {
+            it.status == TradeOutcome.HIT_TP.code || it.status == TradeOutcome.HIT_SL.code
+        }
+    }
+    val historyWinRatePct = remember(resolvedHistory) {
+        if (resolvedHistory.isEmpty()) 0
+        else ((resolvedHistory.count { it.status == TradeOutcome.HIT_TP.code }.toDouble() / resolvedHistory.size) * 100).toInt()
+    }
+    val openHistoryCount = remember(historyList) {
+        historyList.count { it.status == TradeOutcome.ACTIVE.code }
     }
 
     Scaffold(
         modifier = Modifier
             .fillMaxSize()
-            .background(TerminalBg),
-        containerColor = TerminalBg,
-        contentWindowInsets = WindowInsets.safeDrawing
-    ) { innerPadding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-                .background(TerminalBg)
-        ) {
-            // Top Terminal Status Header
-            TerminalHeaderBar(
-                secondsToNext = secondsToNext,
-                lastSyncTimestamp = lastSyncTimestamp,
-                activeSignalsCount = activeSignalsCount,
-                hasNotifPermission = hasNotifPerm,
-                isRadarEnabled = isRadarEnabled,
-                onRefreshClick = { viewModel.triggerManualScan() },
-                onTogglePushRadar = {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !hasNotifPerm) {
-                        permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                    } else {
-                        viewModel.toggleBackgroundRadar()
+            .background(palette.bg),
+        containerColor = palette.bg,
+        contentWindowInsets = WindowInsets.safeDrawing,
+        topBar = {
+            Column(modifier = Modifier.background(palette.bg)) {
+                TerminalHeaderBar(
+                    updatedTime = state.updatedTime,
+                    nextRefreshInSec = state.nextRefreshInSec,
+                    isRefreshing = state.isRefreshing,
+                    isLiveConnection = state.isLiveConnection,
+                    longCount = longCount,
+                    shortCount = shortCount,
+                    waitCount = waitCount,
+                    historyWinRatePct = historyWinRatePct,
+                    resolvedTradesCount = resolvedHistory.size,
+                    notificationsGranted = notificationsGranted,
+                    onRequestNotificationPermission = {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                        }
+                    },
+                    onRefreshClick = { viewModel.refreshNow() },
+                    onToggleThemeClick = {
+                        val nextMode = if (palette.isDark) AppThemeMode.LIGHT else AppThemeMode.DARK
+                        viewModel.setThemeMode(nextMode)
+                    },
+                    userEmail = state.currentUserEmail,
+                    cloudSignalsCount = historyList.size,
+                    onSignOutClick = {
+                        signOutFromGoogle(
+                            credentialManager = credentialManager,
+                            onSignOutComplete = { viewModel.onAuthStateChanged() },
+                            scope = scope
+                        )
                     }
-                }
-            )
-
-            // Filter Mode Bar: Все | Сигналы LONG/SHORT | История | Калькулятор лотов
-            TerminalFilterRow(
-                currentMode = filterMode,
-                totalCount = signals.size,
-                activeSignalsCount = activeSignalsCount,
-                historyCount = allHistory.size,
-                onSelectMode = { viewModel.setFilterMode(it) }
-            )
-
-            // Collapsible Risk & Lot Size Calculator Panel
-            AnimatedVisibility(visible = filterMode == TerminalFilterMode.CALCULATOR) {
-                RiskCalculatorCard(
-                    depositInput = depositInput,
-                    riskPercentInput = riskPercentInput,
-                    depositRub = depositRub,
-                    riskPercent = riskPercent,
-                    onDepositChange = viewModel::updateDepositInput,
-                    onRiskPercentChange = viewModel::updateRiskPercentInput,
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
                 )
+                TerminalTabSwitcher(
+                    selectedTab = state.selectedTab,
+                    totalHistoryCount = historyList.size,
+                    openHistoryCount = openHistoryCount,
+                    newsCount = state.newsItems.size,
+                    onSelectTab = { viewModel.selectTab(it) }
+                )
+                if (state.selectedTab == TerminalTab.LIVE_SIGNALS) {
+                    FilterBar(
+                        selectedFilter = state.selectedFilter,
+                        onSelectFilter = { viewModel.selectFilter(it) }
+                    )
+                }
             }
-
-            // Main Body: Either Signal History Screen or Live Stock Signals List
-            if (filterMode == TerminalFilterMode.HISTORY) {
-                SignalHistoryScreen(
-                    allHistory = allHistory,
-                    summary = performanceSummary,
-                    outcomeFilter = historyOutcomeFilter,
-                    selectedTicker = selectedHistoryTicker,
-                    onSelectOutcomeFilter = viewModel::setHistoryOutcomeFilter,
-                    onSelectTicker = viewModel::setSelectedHistoryTicker,
-                    modifier = Modifier.weight(1f)
-                )
-            } else {
-                val displayedSignals = when (filterMode) {
-                    TerminalFilterMode.SIGNALS_ONLY -> signals.filter {
-                        it.direction == SignalDirection.LONG || it.direction == SignalDirection.SHORT
-                    }
-                    else -> signals
-                }
-
-                if (isLoading && signals.isEmpty()) {
+        }
+    ) { innerPadding ->
+        when (state.selectedTab) {
+            TerminalTab.LIVE_SIGNALS -> {
+                if (state.isLoading && state.signals.isEmpty()) {
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
-                            .weight(1f),
+                            .padding(innerPadding),
                         contentAlignment = Alignment.Center
                     ) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            CircularProgressIndicator(color = SignalLong)
+                            CircularProgressIndicator(color = palette.longColor)
                             Spacer(modifier = Modifier.height(12.dp))
                             Text(
-                                text = "Синхронизация со шлюзом MOEX ISS (TQBR)...",
-                                color = TerminalTextPrimary,
-                                fontFamily = FontFamily.Monospace,
-                                fontSize = 13.sp
+                                text = "Загрузка свечей MOEX ISS и 7 факторов Quant 2.0...",
+                                color = palette.textSecondary,
+                                fontFamily = JetBrainsMonoFontFamily,
+                                fontSize = 12.sp
                             )
-                            Spacer(modifier = Modifier.height(4.dp))
+                        }
+                    }
+                } else if (filteredSignals.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(innerPadding)
+                            .padding(24.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             Text(
-                                text = "Расчет EMA 20/50 • RSI (14) • ATR (14) по 15 ликвидным акциям",
-                                color = TerminalTextSecondary,
-                                fontSize = 11.sp
+                                text = "В выбранном фильтре «${state.selectedFilter.title}» сигналов нет",
+                                color = palette.textPrimary,
+                                fontFamily = JetBrainsMonoFontFamily,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = "Переключитесь на «Все (15)», чтобы видеть уровни и графики TradingView по всем бумагам.",
+                                color = palette.textSecondary,
+                                fontSize = 12.sp
                             )
                         }
                     }
@@ -275,593 +282,86 @@ fun MoexPulseApp(viewModel: PulseViewModel = viewModel()) {
                     LazyColumn(
                         modifier = Modifier
                             .fillMaxSize()
-                            .weight(1f)
-                            .testTag("signals_lazy_column"),
-                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                            .padding(innerPadding)
+                            .testTag("signals_list"),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        if (errorMessage != null && signals.isEmpty()) {
-                            item {
-                                ErrorBanner(
-                                    message = errorMessage ?: "",
-                                    onRetry = { viewModel.triggerManualScan() }
-                                )
-                            }
-                        }
-
-                        // Compact Summary Strip at top of live feed
-                        item {
-                            CompactQuantPulseStrip(
-                                activeSignalsCount = activeSignalsCount,
-                                winRate = performanceSummary.winRatePercent,
-                                totalLoggedSignals = performanceSummary.totalSignals,
-                                depositRub = depositRub,
-                                riskPercent = riskPercent,
-                                onOpenHistory = { viewModel.setFilterMode(TerminalFilterMode.HISTORY) },
-                                onOpenCalculator = { viewModel.setFilterMode(TerminalFilterMode.CALCULATOR) }
-                            )
-                        }
-
-                        if (displayedSignals.isEmpty()) {
-                            item {
-                                EmptySignalsCard(
-                                    onShowAll = { viewModel.setFilterMode(TerminalFilterMode.ALL) },
-                                    onOpenHistory = { viewModel.setFilterMode(TerminalFilterMode.HISTORY) }
-                                )
-                            }
-                        } else {
-                            items(displayedSignals, key = { it.ticker }) { signal ->
-                                val tickerHistory = historyByTicker[signal.ticker].orEmpty()
-                                SignalCard(
-                                    signal = signal,
-                                    stockHistory = tickerHistory,
-                                    depositRub = depositRub,
-                                    riskPercent = riskPercent,
-                                    isExpanded = expandedTickers.contains(signal.ticker),
-                                    onToggleExpand = { viewModel.toggleCardExpanded(signal.ticker) },
-                                    onOpenFullStockHistory = { viewModel.openStockHistoryScreen(signal.ticker) },
-                                    onNotifySignal = {
-                                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !hasNotifPerm) {
-                                            permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                                        } else {
-                                            SignalNotificationHelper.notifyNewTradingSignal(context, signal)
-                                        }
-                                    }
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun TerminalHeaderBar(
-    secondsToNext: Int,
-    lastSyncTimestamp: Long,
-    activeSignalsCount: Int,
-    hasNotifPermission: Boolean,
-    isRadarEnabled: Boolean,
-    onRefreshClick: () -> Unit,
-    onTogglePushRadar: () -> Unit
-) {
-    val syncTimeStr = if (lastSyncTimestamp > 0L) {
-        SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(lastSyncTimestamp))
-    } else {
-        "Синхронизация..."
-    }
-
-    Surface(
-        color = TerminalSurface,
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            modifier = Modifier
-                                .size(9.dp)
-                                .clip(CircleShape)
-                                .background(SignalLong)
-                        )
-                        Spacer(modifier = Modifier.width(7.dp))
-                        Text(
-                            text = "MOEX TQBR • LIVE ОБНОВЛЕНИЕ",
-                            color = SignalLong,
-                            fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.ExtraBold,
-                            fontSize = 11.sp
-                        )
-                    }
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text(
-                        text = "MOEX Pulse Quant • Активных: $activeSignalsCount • Обновлено: $syncTimeStr",
-                        color = TerminalTextPrimary,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 14.sp
-                    )
-                }
-
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    // Push Notifications & Background Radar Toggle
-                    val pushActive = hasNotifPermission && isRadarEnabled
-                    Surface(
-                        color = if (pushActive) SignalLongDim else TerminalSurfaceElevated,
-                        shape = RoundedCornerShape(10.dp),
-                        border = BorderStroke(
-                            1.dp,
-                            if (pushActive) SignalLong.copy(alpha = 0.6f) else TerminalBorder
-                        ),
-                        modifier = Modifier
-                            .testTag("toggle_push_radar_button")
-                            .clickable(onClick = onTogglePushRadar)
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                imageVector = if (pushActive) Icons.Default.NotificationsActive else Icons.Default.NotificationsNone,
-                                contentDescription = "Push-уведомления в фоне",
-                                tint = if (pushActive) SignalLong else TerminalTextSecondary,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(
-                                text = if (pushActive) "PUSH ON" else "PUSH",
-                                color = if (pushActive) SignalLong else TerminalTextSecondary,
-                                fontFamily = FontFamily.Monospace,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 11.sp
+                        items(filteredSignals, key = { it.ticker }) { signal ->
+                            SignalCard(
+                                signal = signal,
+                                tickerHistory = historyByTicker[signal.ticker].orEmpty(),
+                                onClick = { viewModel.selectSignalForCalculator(signal) },
+                                onOpenTickerHistory = { ticker ->
+                                    viewModel.selectHistoryFilterTicker(ticker)
+                                }
                             )
                         }
                     }
-
-                    Spacer(modifier = Modifier.width(6.dp))
-
-                    // Countdown Pill & Manual Refresh Button
-                    Surface(
-                        color = TerminalSurfaceElevated,
-                        shape = RoundedCornerShape(10.dp),
-                        border = BorderStroke(1.dp, TerminalBorder)
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(start = 9.dp, end = 4.dp, top = 2.dp, bottom = 2.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = "${secondsToNext}с",
-                                color = TerminalCyan,
-                                fontFamily = FontFamily.Monospace,
-                                fontWeight = FontWeight.ExtraBold,
-                                fontSize = 12.sp
-                            )
-                            IconButton(
-                                onClick = onRefreshClick,
-                                modifier = Modifier
-                                    .size(32.dp)
-                                    .testTag("manual_refresh_button")
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Refresh,
-                                    contentDescription = "Сканировать сейчас",
-                                    tint = TerminalTextPrimary,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                            }
-                        }
-                    }
                 }
             }
 
-            Spacer(modifier = Modifier.height(6.dp))
-            LinearProgressIndicator(
-                progress = { (10 - secondsToNext).coerceIn(0, 10) / 10f },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(3.dp)
-                    .clip(RoundedCornerShape(2.dp)),
-                color = TerminalCyan,
-                trackColor = TerminalSurfaceElevated,
-                strokeCap = StrokeCap.Round
+            TerminalTab.NEWS_FEED -> {
+                NewsFeedScreen(
+                    newsItems = state.newsItems,
+                    selectedTickerFilter = state.selectedNewsTickerFilter,
+                    marketSentimentIndex = state.marketSentimentIndex,
+                    marketRegimeLabel = state.marketRegimeLabel,
+                    isLoading = state.isNewsLoading,
+                    onSelectTickerFilter = { viewModel.selectNewsTickerFilter(it) },
+                    onRefreshNews = { viewModel.refreshNewsNow() },
+                    onAnalyzeNewsWithAi = { newsItem -> viewModel.analyzeNewsWithAi(newsItem) },
+                    modifier = Modifier.padding(innerPadding)
+                )
+            }
+
+            TerminalTab.HISTORY -> {
+                SignalHistoryScreen(
+                    historyList = historyList,
+                    filterTicker = state.historyFilterTicker,
+                    onClearFilterTicker = { viewModel.selectHistoryFilterTicker(null) },
+                    onClearAllHistory = { viewModel.clearHistory() },
+                    modifier = Modifier.padding(innerPadding)
+                )
+            }
+
+            TerminalTab.AI_CHAT -> {
+                AiQuantChatScreen(
+                    messages = chatMessages,
+                    selectedMode = state.selectedAiMode,
+                    isSending = state.isAiSending,
+                    onSelectMode = { viewModel.selectAiMode(it) },
+                    onSendMessage = { prompt -> viewModel.sendAiChatPrompt(prompt) },
+                    onClearChat = { viewModel.clearAiChatHistory() },
+                    modifier = Modifier.padding(innerPadding)
+                )
+            }
+
+            TerminalTab.SETTINGS_PC -> {
+                SettingsAndPcScreen(
+                    settings = settings,
+                    onSelectTheme = { viewModel.setThemeMode(it) },
+                    onSelectStrategyProfile = { viewModel.setStrategyProfile(it) },
+                    onSelectCandleInterval = { viewModel.setCandleInterval(it) },
+                    onChangeMinConfidence = { viewModel.setMinConfidence(it) },
+                    onToggleNewsConfirmation = { viewModel.setRequireNewsConfirmation(it) },
+                    onToggleStrictVwapMacd = { viewModel.setStrictVwapMacd(it) },
+                    onSelectPollIntervalSec = { viewModel.setPollIntervalSec(it) },
+                    onRecalculateBacktest = { viewModel.recalculateHistoryWithCurrentSettings() },
+                    modifier = Modifier.padding(innerPadding)
+                )
+            }
+        }
+
+        state.selectedSignal?.let { activeSignal ->
+            PositionCalculatorSheet(
+                signal = activeSignal,
+                depositText = state.depositText,
+                riskPercentText = state.riskPercentText,
+                onDepositChange = { viewModel.updateDepositText(it) },
+                onRiskPercentChange = { viewModel.updateRiskPercentText(it) },
+                onDismiss = { viewModel.selectSignalForCalculator(null) }
             )
-        }
-    }
-}
-
-@Composable
-private fun TerminalFilterRow(
-    currentMode: TerminalFilterMode,
-    totalCount: Int,
-    activeSignalsCount: Int,
-    historyCount: Int,
-    onSelectMode: (TerminalFilterMode) -> Unit
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(TerminalBg)
-            .horizontalScroll(rememberScrollState())
-            .padding(horizontal = 14.dp, vertical = 8.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        TerminalFilterMode.entries.forEach { mode ->
-            val selected = currentMode == mode
-            val labelText = when (mode) {
-                TerminalFilterMode.ALL -> "Все ($totalCount)"
-                TerminalFilterMode.SIGNALS_ONLY -> "Сигналы LONG/SHORT ($activeSignalsCount)"
-                TerminalFilterMode.HISTORY -> "История ($historyCount)"
-                TerminalFilterMode.CALCULATOR -> "Калькулятор лотов"
-            }
-            FilterChip(
-                selected = selected,
-                onClick = { onSelectMode(mode) },
-                modifier = Modifier.testTag("filter_tab_${mode.name.lowercase()}"),
-                label = {
-                    Text(
-                        text = labelText,
-                        fontSize = 12.sp,
-                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
-                    )
-                },
-                leadingIcon = {
-                    when (mode) {
-                        TerminalFilterMode.ALL -> Icon(
-                            imageVector = Icons.Default.TrendingUp,
-                            contentDescription = null,
-                            modifier = Modifier.size(15.dp)
-                        )
-                        TerminalFilterMode.SIGNALS_ONLY -> Box(
-                            modifier = Modifier
-                                .size(8.dp)
-                                .clip(CircleShape)
-                                .background(if (activeSignalsCount > 0) SignalLong else SignalWait)
-                        )
-                        TerminalFilterMode.HISTORY -> Icon(
-                            imageVector = Icons.Default.History,
-                            contentDescription = null,
-                            modifier = Modifier.size(15.dp)
-                        )
-                        TerminalFilterMode.CALCULATOR -> Icon(
-                            imageVector = Icons.Default.Calculate,
-                            contentDescription = null,
-                            modifier = Modifier.size(15.dp)
-                        )
-                    }
-                },
-                colors = FilterChipDefaults.filterChipColors(
-                    selectedContainerColor = SignalLongDim,
-                    selectedLabelColor = SignalLong,
-                    selectedLeadingIconColor = SignalLong,
-                    containerColor = TerminalSurface,
-                    labelColor = TerminalTextSecondary,
-                    iconColor = TerminalTextSecondary
-                )
-            )
-        }
-    }
-}
-
-@Composable
-private fun CompactQuantPulseStrip(
-    activeSignalsCount: Int,
-    winRate: Double,
-    totalLoggedSignals: Int,
-    depositRub: Double,
-    riskPercent: Double,
-    onOpenHistory: () -> Unit,
-    onOpenCalculator: () -> Unit
-) {
-    val riskRub = depositRub * (riskPercent / 100.0)
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        Surface(
-            color = TerminalSurface,
-            shape = RoundedCornerShape(12.dp),
-            border = BorderStroke(1.dp, TerminalBorder),
-            modifier = Modifier
-                .weight(1f)
-                .clickable(onClick = onOpenHistory)
-        ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Column {
-                    Text(
-                        text = "ЖУРНАЛ СИГНАЛОВ",
-                        color = TerminalTextMuted,
-                        fontSize = 9.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = "$totalLoggedSignals сделок • Win ${String.format(Locale.US, "%.0f", winRate)}%",
-                        color = SignalLong,
-                        fontFamily = FontFamily.Monospace,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 12.sp
-                    )
-                }
-                Icon(
-                    imageVector = Icons.Default.History,
-                    contentDescription = null,
-                    tint = TerminalCyan,
-                    modifier = Modifier.size(18.dp)
-                )
-            }
-        }
-
-        Surface(
-            color = TerminalSurface,
-            shape = RoundedCornerShape(12.dp),
-            border = BorderStroke(1.dp, TerminalBorder),
-            modifier = Modifier
-                .weight(1f)
-                .clickable(onClick = onOpenCalculator)
-        ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Column {
-                    Text(
-                        text = "РИСК-МЕНЕДЖМЕНТ",
-                        color = TerminalTextMuted,
-                        fontSize = 9.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = "Риск: ${String.format(Locale.US, "%.0f", riskRub)} ₽ (${String.format(Locale.US, "%.1f", riskPercent)}%)",
-                        color = TerminalCyan,
-                        fontFamily = FontFamily.Monospace,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 12.sp
-                    )
-                }
-                Icon(
-                    imageVector = Icons.Default.Calculate,
-                    contentDescription = null,
-                    tint = SignalWait,
-                    modifier = Modifier.size(18.dp)
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun RiskCalculatorCard(
-    depositInput: String,
-    riskPercentInput: String,
-    depositRub: Double,
-    riskPercent: Double,
-    onDepositChange: (String) -> Unit,
-    onRiskPercentChange: (String) -> Unit,
-    modifier: Modifier = Modifier
-) {
-    val maxRiskRub = depositRub * (riskPercent / 100.0)
-    Card(
-        modifier = modifier
-            .fillMaxWidth()
-            .testTag("risk_calculator_card"),
-        shape = RoundedCornerShape(14.dp),
-        colors = CardDefaults.cardColors(containerColor = TerminalSurface),
-        border = BorderStroke(1.dp, TerminalCyan.copy(alpha = 0.5f))
-    ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "КАЛЬКУЛЯТОР РИСКА И ОБЪЕМА ПОЗИЦИИ",
-                    color = TerminalTextPrimary,
-                    fontFamily = FontFamily.Monospace,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 12.sp
-                )
-                Text(
-                    text = "Риск на сделку: ${String.format(Locale.US, "%.0f", maxRiskRub)} ₽",
-                    color = SignalLong,
-                    fontFamily = FontFamily.Monospace,
-                    fontWeight = FontWeight.ExtraBold,
-                    fontSize = 12.sp
-                )
-            }
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                OutlinedTextField(
-                    value = depositInput,
-                    onValueChange = onDepositChange,
-                    label = { Text("Депозит (₽)", fontSize = 11.sp) },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    modifier = Modifier
-                        .weight(1.3f)
-                        .testTag("deposit_input"),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = SignalLong,
-                        unfocusedBorderColor = TerminalBorder,
-                        focusedTextColor = TerminalTextPrimary,
-                        unfocusedTextColor = TerminalTextPrimary,
-                        focusedLabelColor = SignalLong,
-                        unfocusedLabelColor = TerminalTextSecondary
-                    )
-                )
-
-                OutlinedTextField(
-                    value = riskPercentInput,
-                    onValueChange = onRiskPercentChange,
-                    label = { Text("Риск (%)", fontSize = 11.sp) },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                    modifier = Modifier
-                        .weight(1f)
-                        .testTag("risk_percent_input"),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = TerminalCyan,
-                        unfocusedBorderColor = TerminalBorder,
-                        focusedTextColor = TerminalTextPrimary,
-                        unfocusedTextColor = TerminalTextPrimary,
-                        focusedLabelColor = TerminalCyan,
-                        unfocusedLabelColor = TerminalTextSecondary
-                    )
-                )
-            }
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "Быстрый выбор риска:",
-                    color = TerminalTextSecondary,
-                    fontSize = 11.sp
-                )
-                listOf("0.5", "1.0", "1.5", "2.0").forEach { preset ->
-                    val selected = riskPercentInput == preset
-                    Surface(
-                        color = if (selected) SignalLongDim else TerminalSurfaceElevated,
-                        shape = RoundedCornerShape(6.dp),
-                        border = BorderStroke(1.dp, if (selected) SignalLong else TerminalBorder),
-                        modifier = Modifier.clickable { onRiskPercentChange(preset) }
-                    ) {
-                        Text(
-                            text = "$preset%",
-                            color = if (selected) SignalLong else TerminalTextSecondary,
-                            fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 11.sp,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun EmptySignalsCard(
-    onShowAll: () -> Unit,
-    onOpenHistory: () -> Unit
-) {
-    Card(
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = TerminalSurface),
-        border = BorderStroke(1.dp, TerminalBorder),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(20.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Text(
-                text = "В данный момент все бумаги в фазе ⏳ WAIT",
-                color = SignalWait,
-                fontFamily = FontFamily.Monospace,
-                fontWeight = FontWeight.Bold,
-                fontSize = 14.sp
-            )
-            Spacer(modifier = Modifier.height(6.dp))
-            Text(
-                text = "Алгоритм фильтрует шумовые движения и ждет точного пересечения EMA 20/50 с подтверждением RSI и объема. Вы можете посмотреть уровни всех 15 акций или открыть историю прошлых сигналов.",
-                color = TerminalTextSecondary,
-                fontSize = 12.sp
-            )
-            Spacer(modifier = Modifier.height(12.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Surface(
-                    color = SignalLongDim,
-                    shape = RoundedCornerShape(8.dp),
-                    border = BorderStroke(1.dp, SignalLong),
-                    modifier = Modifier.clickable(onClick = onShowAll)
-                ) {
-                    Text(
-                        text = "Показать все 15 акций",
-                        color = SignalLong,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 12.sp,
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
-                    )
-                }
-                Surface(
-                    color = TerminalSurfaceElevated,
-                    shape = RoundedCornerShape(8.dp),
-                    border = BorderStroke(1.dp, TerminalCyan),
-                    modifier = Modifier.clickable(onClick = onOpenHistory)
-                ) {
-                    Text(
-                        text = "История сигналов",
-                        color = TerminalCyan,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 12.sp,
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun ErrorBanner(
-    message: String,
-    onRetry: () -> Unit
-) {
-    Surface(
-        color = TerminalSurfaceElevated,
-        shape = RoundedCornerShape(12.dp),
-        border = BorderStroke(1.dp, SignalShort.copy(alpha = 0.6f)),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Row(
-            modifier = Modifier.padding(12.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = message,
-                color = SignalShort,
-                fontSize = 12.sp,
-                modifier = Modifier.weight(1f)
-            )
-            Spacer(modifier = Modifier.width(8.dp))
-            Surface(
-                color = SignalWaitDim,
-                shape = RoundedCornerShape(8.dp),
-                modifier = Modifier.clickable(onClick = onRetry)
-            ) {
-                Text(
-                    text = "Повторить",
-                    color = SignalWait,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 12.sp,
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-                )
-            }
         }
     }
 }

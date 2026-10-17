@@ -1,5 +1,7 @@
 package com.example.quant
 
+import com.example.data.AppSettings
+import com.example.data.QuantStrategyProfile
 import com.example.data.SignalHistoryEntity
 import com.example.data.TradeOutcome
 import kotlinx.coroutines.Dispatchers
@@ -20,6 +22,7 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.roundToLong
+import kotlin.math.sqrt
 
 enum class SignalDirection(val label: String, val badgeText: String) {
     LONG("LONG", "🟢 LONG"),
@@ -30,6 +33,7 @@ enum class SignalDirection(val label: String, val badgeText: String) {
 data class StockMeta(
     val ticker: String,
     val nameRu: String,
+    val sectorRu: String,
     val defaultLotSize: Int,
     val defaultStep: Double
 )
@@ -45,9 +49,16 @@ data class MoexCandle(
     val timestampMillis: Long
 )
 
+data class QuantFactorCheck(
+    val nameRu: String,
+    val valueText: String,
+    val passed: Boolean
+)
+
 data class QuantSignal(
     val ticker: String,
     val name: String,
+    val sectorRu: String = "",
     val currentPrice: Double,
     val changePercent: Double,
     val valTodayRub: Double,
@@ -66,6 +77,17 @@ data class QuantSignal(
     val rsi14: Double,
     val atr14: Double,
     val volumeRatio: Double,
+    val vwap: Double = currentPrice,
+    val macdHistogram: Double = 0.0,
+    val bollingerPercentB: Double = 0.5,
+    val adx14: Double = 22.0,
+    val supportLevel: Double = stopLoss,
+    val resistanceLevel: Double = takeProfit,
+    val newsSentimentScore: Int = 0,
+    val newsCatalystSummary: String = "Нейтральный новостной фон",
+    val confluencePassedCount: Int = 5,
+    val confluenceFactors: List<QuantFactorCheck> = emptyList(),
+    val tradingViewUrl: String = QuantSignalEngine.tradingViewUrl(ticker),
     val reason: String,
     val nearestLevelNote: String,
     val updateTime: String,
@@ -75,22 +97,28 @@ data class QuantSignal(
 object QuantSignalEngine {
 
     val TOP_MOEX_STOCKS: List<StockMeta> = listOf(
-        StockMeta("SBER", "Сбербанк", 10, 0.01),
-        StockMeta("GAZP", "Газпром", 10, 0.01),
-        StockMeta("LKOH", "ЛУКОЙЛ", 1, 0.5),
-        StockMeta("YDEX", "Яндекс", 1, 0.5),
-        StockMeta("T", "Т-Технологии", 1, 0.2),
-        StockMeta("ROSN", "Роснефть", 1, 0.05),
-        StockMeta("NVTK", "НОВАТЭК", 1, 0.2),
-        StockMeta("GMKN", "Норникель", 10, 0.02),
-        StockMeta("SNGS", "Сургутнефтегаз", 100, 0.005),
-        StockMeta("TATN", "Татнефть", 1, 0.1),
-        StockMeta("MTSS", "МТС", 10, 0.05),
-        StockMeta("CHMF", "Северсталь", 1, 0.2),
-        StockMeta("PLZL", "Полюс", 1, 0.5),
-        StockMeta("ALRS", "АЛРОСА", 10, 0.01),
-        StockMeta("MOEX", "МосБиржа", 10, 0.01)
+        StockMeta("SBER", "Сбербанк", "Финансы", 10, 0.01),
+        StockMeta("GAZP", "Газпром", "Нефть и газ", 10, 0.01),
+        StockMeta("LKOH", "ЛУКОЙЛ", "Нефть и газ", 1, 0.5),
+        StockMeta("YDEX", "Яндекс", "IT и Экосистемы", 1, 0.5),
+        StockMeta("T", "Т-Технологии", "Финтех", 1, 0.2),
+        StockMeta("ROSN", "Роснефть", "Нефть и газ", 1, 0.05),
+        StockMeta("NVTK", "НОВАТЭК", "СПГ и Газ", 1, 0.2),
+        StockMeta("GMKN", "Норникель", "Металлургия", 10, 0.02),
+        StockMeta("SNGS", "Сургутнефтегаз", "Нефть и газ", 100, 0.005),
+        StockMeta("TATN", "Татнефть", "Нефть и газ", 1, 0.1),
+        StockMeta("MTSS", "МТС", "Телеком", 10, 0.05),
+        StockMeta("CHMF", "Северсталь", "Металлургия", 1, 0.2),
+        StockMeta("PLZL", "Полюс", "Золотодобыча", 1, 0.5),
+        StockMeta("ALRS", "АЛРОСА", "Добыча алмазов", 10, 0.01),
+        StockMeta("MOEX", "МосБиржа", "Финансы", 10, 0.01)
     )
+
+    fun tradingViewUrl(ticker: String): String =
+        "https://ru.tradingview.com/chart/?symbol=MOEX:${ticker.uppercase(Locale.US)}"
+
+    fun tradingViewSymbolOverviewUrl(ticker: String): String =
+        "https://ru.tradingview.com/symbols/MOEX-${ticker.uppercase(Locale.US)}/"
 
     fun calculateEmaSeries(prices: List<Double>, period: Int): List<Double> {
         if (prices.isEmpty()) return emptyList()
@@ -168,6 +196,108 @@ object QuantSignalEngine {
         return atrList
     }
 
+    /**
+     * MACD (12, 26, 9) histogram series: positive and rising = bullish momentum;
+     * negative and falling = bearish momentum.
+     */
+    fun calculateMacdHistogramSeries(closes: List<Double>): List<Double> {
+        if (closes.isEmpty()) return emptyList()
+        val ema12 = calculateEmaSeries(closes, 12)
+        val ema26 = calculateEmaSeries(closes, 26)
+        val macdLine = closes.indices.map { idx -> ema12[idx] - ema26[idx] }
+        val signalLine = calculateEmaSeries(macdLine, 9)
+        return closes.indices.map { idx -> macdLine[idx] - signalLine[idx] }
+    }
+
+    /**
+     * Rolling Volume-Weighted Average Price (VWAP) over lookback candles.
+     */
+    fun calculateVwapSeries(candles: List<MoexCandle>, lookback: Int = 24): List<Double> {
+        if (candles.isEmpty()) return emptyList()
+        val result = ArrayList<Double>(candles.size)
+        for (i in candles.indices) {
+            val start = max(0, i - lookback + 1)
+            var pvSum = 0.0
+            var volSum = 0.0
+            for (j in start..i) {
+                val c = candles[j]
+                val typical = (c.high + c.low + c.close) / 3.0
+                val w = max(c.volume, 1.0)
+                pvSum += typical * w
+                volSum += w
+            }
+            result.add(if (volSum > 0.0) pvSum / volSum else candles[i].close)
+        }
+        return result
+    }
+
+    /**
+     * Bollinger %B (period = 20, mult = 2.0):
+     * 0.0 = at lower band, 0.5 = at SMA20, 1.0 = at upper band.
+     * Prevents entering LONG at the top of an overextended band (> 0.85) or SHORT at the bottom (< 0.15).
+     */
+    fun calculateBollingerPercentBSeries(closes: List<Double>, period: Int = 20, mult: Double = 2.0): List<Double> {
+        if (closes.isEmpty()) return emptyList()
+        val result = ArrayList<Double>(closes.size)
+        for (i in closes.indices) {
+            val start = max(0, i - period + 1)
+            val slice = closes.subList(start, i + 1)
+            val mean = slice.average()
+            val variance = slice.map { (it - mean) * (it - mean) }.average()
+            val stdDev = sqrt(max(variance, 1e-8))
+            val upper = mean + mult * stdDev
+            val lower = mean - mult * stdDev
+            val span = max(upper - lower, 1e-6)
+            val pctB = ((closes[i] - lower) / span).coerceIn(-0.2, 1.2)
+            result.add(pctB)
+        }
+        return result
+    }
+
+    /**
+     * ADX (14) trend strength approximation: values >= 20 indicate a genuine directional trend,
+     * while < 16 indicates choppy range-bound noise.
+     */
+    fun calculateAdxSeries(candles: List<MoexCandle>, period: Int = 14): List<Double> {
+        if (candles.size < 3) return List(candles.size) { 20.0 }
+        val dxList = ArrayList<Double>(candles.size)
+        dxList.add(20.0)
+        var smoothPlusDm = 0.0
+        var smoothMinusDm = 0.0
+        var smoothTr = 0.0
+
+        for (i in 1 until candles.size) {
+            val curr = candles[i]
+            val prev = candles[i - 1]
+            val upMove = curr.high - prev.high
+            val downMove = prev.low - curr.low
+            val plusDm = if (upMove > downMove && upMove > 0) upMove else 0.0
+            val minusDm = if (downMove > upMove && downMove > 0) downMove else 0.0
+            val tr = max(curr.high - curr.low, max(abs(curr.high - prev.close), abs(curr.low - prev.close)))
+
+            if (i <= period) {
+                smoothPlusDm += plusDm
+                smoothMinusDm += minusDm
+                smoothTr += tr
+            } else {
+                smoothPlusDm = smoothPlusDm - (smoothPlusDm / period) + plusDm
+                smoothMinusDm = smoothMinusDm - (smoothMinusDm / period) + minusDm
+                smoothTr = smoothTr - (smoothTr / period) + tr
+            }
+
+            if (smoothTr <= 1e-9) {
+                dxList.add(20.0)
+            } else {
+                val plusDi = 100.0 * (smoothPlusDm / smoothTr)
+                val minusDi = 100.0 * (smoothMinusDm / smoothTr)
+                val diSum = plusDi + minusDi
+                val dx = if (diSum > 1e-6) 100.0 * abs(plusDi - minusDi) / diSum else 18.0
+                dxList.add(dx)
+            }
+        }
+        return calculateEmaSeries(dxList, period).map { it.coerceIn(10.0, 65.0) }
+    }
+
     fun calculateVolumeRatio(candles: List<MoexCandle>, index: Int, lookback: Int = 20): Double {
         if (candles.isEmpty() || index < 0 || index >= candles.size) return 1.0
         val start = max(0, index - lookback)
@@ -191,7 +321,9 @@ object QuantSignalEngine {
         lotSize: Int,
         minStep: Double,
         updateTime: String,
-        candles: List<MoexCandle>
+        candles: List<MoexCandle>,
+        settings: AppSettings = AppSettings(),
+        tickerNews: TickerNewsIntelligence? = null
     ): QuantSignal {
         val closes = candles.map { it.close }
         val currentPrice = livePrice ?: closes.lastOrNull() ?: 100.0
@@ -206,35 +338,50 @@ object QuantSignalEngine {
             emptyList()
         }
 
-        if (effectiveCandles.size < 5) {
+        val newsScore = tickerNews?.sentimentScore ?: 0
+        val newsSummary = tickerNews?.topCatalystNote ?: "Нейтральный новостной фон • Фокус на технику"
+
+        if (effectiveCandles.size < 10) {
             val fallbackAtr = max(currentPrice * 0.012, minStep * 4)
             val sl = roundToStep(currentPrice - 1.5 * fallbackAtr, minStep)
             val tp = roundToStep(currentPrice + 3.0 * fallbackAtr, minStep)
             return QuantSignal(
                 ticker = meta.ticker,
                 name = meta.nameRu,
+                sectorRu = meta.sectorRu,
                 currentPrice = currentPrice,
                 changePercent = changePercent,
                 valTodayRub = valTodayRub,
                 lotSize = lotSize,
                 minStep = minStep,
                 direction = SignalDirection.WAIT,
-                confidence = 45,
+                confidence = 48,
                 entryPrice = currentPrice,
                 takeProfit = tp,
                 stopLoss = sl,
                 tpPercent = ((tp - currentPrice) / currentPrice) * 100.0,
                 slPercent = ((sl - currentPrice) / currentPrice) * 100.0,
-                riskRewardRatio = 2.0,
+                riskRewardRatio = settings.strategyProfile.riskRewardRatio,
                 ema20 = currentPrice,
                 ema50 = currentPrice,
                 rsi14 = 50.0,
                 atr14 = fallbackAtr,
                 volumeRatio = 1.0,
+                vwap = currentPrice,
+                macdHistogram = 0.0,
+                bollingerPercentB = 0.5,
+                adx14 = 20.0,
+                supportLevel = sl,
+                resistanceLevel = tp,
+                newsSentimentScore = newsScore,
+                newsCatalystSummary = newsSummary,
+                confluencePassedCount = 3,
+                confluenceFactors = emptyList(),
+                tradingViewUrl = tradingViewUrl(meta.ticker),
                 reason = "Накопление свечных данных TQBR",
                 nearestLevelNote = "Уровень баланса: ${formatPrice(currentPrice, minStep)} ₽",
                 updateTime = updateTime,
-                recentCandles = effectiveCandles.takeLast(30)
+                recentCandles = effectiveCandles.takeLast(32)
             )
         }
 
@@ -243,41 +390,59 @@ object QuantSignalEngine {
         val ema50Series = calculateEmaSeries(effCloses, 50)
         val rsiSeries = calculateRsiSeries(effCloses, 14)
         val atrSeries = calculateAtrSeries(effectiveCandles, 14)
+        val macdHistSeries = calculateMacdHistogramSeries(effCloses)
+        val vwapSeries = calculateVwapSeries(effectiveCandles, 24)
+        val bbPercentBSeries = calculateBollingerPercentBSeries(effCloses, 20, 2.0)
+        val adxSeries = calculateAdxSeries(effectiveCandles, 14)
 
         val lastIdx = effectiveCandles.lastIndex
         val prevIdx = max(0, lastIdx - 1)
+        val lookbackWindow = effectiveCandles.takeLast(24)
+        val recentSupport = roundToStep(lookbackWindow.minOf { it.low }, minStep)
+        val recentResistance = roundToStep(lookbackWindow.maxOf { it.high }, minStep)
 
         val ema20 = ema20Series[lastIdx]
         val prevEma20 = ema20Series[prevIdx]
         val ema50 = ema50Series[lastIdx]
         val rsi = rsiSeries[lastIdx]
+        val prevRsi = rsiSeries[prevIdx]
         val atr = max(atrSeries[lastIdx], minStep * 2.0)
-        val prevClose = effCloses[prevIdx]
-        val prevLow = effectiveCandles[prevIdx].low
-        val prevHigh = effectiveCandles[prevIdx].high
+        val macdHist = macdHistSeries[lastIdx]
+        val prevMacdHist = macdHistSeries[prevIdx]
+        val vwap = vwapSeries[lastIdx]
+        val bbPctB = bbPercentBSeries[lastIdx]
+        val adx = adxSeries[lastIdx]
 
-        // Use recent completed candle if current 10-min bar just started
         val volRatioCurrent = calculateVolumeRatio(effectiveCandles, lastIdx, 20)
         val volRatioPrev = calculateVolumeRatio(effectiveCandles, prevIdx, 20)
         val volRatio = max(volRatioCurrent, volRatioPrev * 0.92)
 
-        val eval = evaluatePoint(
-            price = currentPrice,
-            prevClose = prevClose,
-            prevLow = prevLow,
-            prevHigh = prevHigh,
+        val eval = evaluateMultiFactorPoint(
+            candle = effectiveCandles[lastIdx],
+            prevCandle = effectiveCandles[prevIdx],
             ema20 = ema20,
             prevEma20 = prevEma20,
             ema50 = ema50,
             rsi = rsi,
+            prevRsi = prevRsi,
             atr = atr,
             volRatio = volRatio,
-            minStep = minStep
+            vwap = vwap,
+            macdHist = macdHist,
+            prevMacdHist = prevMacdHist,
+            bbPctB = bbPctB,
+            adx = adx,
+            newsScore = if (settings.useNewsSentimentFilter) newsScore else 0,
+            minStep = minStep,
+            strategyProfile = settings.strategyProfile,
+            minConfidenceThreshold = settings.minConfidenceThreshold,
+            strictVwapMacd = settings.useStrictVwapMacdFilter
         )
 
         return QuantSignal(
             ticker = meta.ticker,
             name = meta.nameRu,
+            sectorRu = meta.sectorRu,
             currentPrice = currentPrice,
             changePercent = changePercent,
             valTodayRub = valTodayRub,
@@ -290,12 +455,23 @@ object QuantSignalEngine {
             stopLoss = eval.sl,
             tpPercent = eval.tpPct,
             slPercent = eval.slPct,
-            riskRewardRatio = 2.0,
+            riskRewardRatio = settings.strategyProfile.riskRewardRatio,
             ema20 = ema20,
             ema50 = ema50,
             rsi14 = rsi,
             atr14 = atr,
             volumeRatio = volRatio,
+            vwap = vwap,
+            macdHistogram = macdHist,
+            bollingerPercentB = bbPctB,
+            adx14 = adx,
+            supportLevel = recentSupport,
+            resistanceLevel = recentResistance,
+            newsSentimentScore = newsScore,
+            newsCatalystSummary = newsSummary,
+            confluencePassedCount = eval.passedCount,
+            confluenceFactors = eval.factors,
+            tradingViewUrl = tradingViewUrl(meta.ticker),
             reason = eval.reason,
             nearestLevelNote = eval.levelNote,
             updateTime = updateTime,
@@ -311,144 +487,208 @@ object QuantSignalEngine {
         val sl: Double,
         val tpPct: Double,
         val slPct: Double,
+        val passedCount: Int,
+        val factors: List<QuantFactorCheck>,
         val reason: String,
         val levelNote: String
     )
 
-    private fun evaluatePoint(
-        price: Double,
-        prevClose: Double,
-        prevLow: Double,
-        prevHigh: Double,
+    private fun evaluateMultiFactorPoint(
+        candle: MoexCandle,
+        prevCandle: MoexCandle,
         ema20: Double,
         prevEma20: Double,
         ema50: Double,
         rsi: Double,
+        prevRsi: Double,
         atr: Double,
         volRatio: Double,
-        minStep: Double
+        vwap: Double,
+        macdHist: Double,
+        prevMacdHist: Double,
+        bbPctB: Double,
+        adx: Double,
+        newsScore: Int,
+        minStep: Double,
+        strategyProfile: QuantStrategyProfile,
+        minConfidenceThreshold: Int,
+        strictVwapMacd: Boolean
     ): PointEvaluation {
-        // LONG rules:
-        // Price > EMA 50, EMA 20 crossover upward or bounce off EMA 20, RSI in 35..62, elevated volume
-        val aboveEma50 = price > ema50
+        val price = candle.close
+        val prevClose = prevCandle.close
+        val prevLow = prevCandle.low
+        val prevHigh = prevCandle.high
+
+        val slMult = strategyProfile.slAtrMultiplier
+        val tpMult = strategyProfile.tpAtrMultiplier
+
+        // --- LONG MULTI-FACTOR ANALYSIS ---
+        val f1LongTrend = price > ema50 && ema20 >= ema50 * 0.997 && ema20 >= prevEma20 * 0.9995
         val ema20CrossUp = prevClose <= prevEma20 * 1.002 && price >= ema20
-        val ema20BounceUp = price >= ema20 && (prevLow <= ema20 * 1.004 || abs(price - ema20) <= 0.85 * atr)
-        val bullishTrendStructure = ema20 >= ema50 * 0.998 && price >= ema20
-        val rsiLongOk = rsi in 35.0..62.5
-        val volumeLongOk = volRatio >= 0.95
+        val ema20PullbackBounce = price >= ema20 && (prevLow <= ema20 * 1.005 || candle.low <= ema20 * 1.004) &&
+            abs(price - ema20) <= 0.75 * atr && candle.close >= candle.open
+        val f2LongVwap = price >= vwap * 0.998
+        val f3LongMacd = macdHist >= 0.0 || macdHist > prevMacdHist
+        val f4LongRsi = rsi in 36.0..61.5 && (rsi >= prevRsi - 1.5)
+        // Anti-Chasing Guard: forbid buying at the very top of Bollinger Band (%B > 0.84) or > 1.25 ATR above EMA20
+        val f5LongBollinger = bbPctB in 0.25..0.84 && (price - ema20) <= 1.25 * atr
+        val f6LongVolAdx = (volRatio >= 0.92 || (ema20CrossUp && volRatio >= 0.80)) && adx >= 16.0
+        val f7LongNews = newsScore >= -20
 
-        // SHORT rules:
-        // Price < EMA 50, EMA 20 breakdown downward or bounce down off EMA 20, RSI in 38..65, elevated volume
-        val belowEma50 = price < ema50
+        val longFactors = listOf(
+            QuantFactorCheck("Тренд EMA 20/50", if (f1LongTrend) "Бычий (> EMA50)" else "Слабый", f1LongTrend),
+            QuantFactorCheck("Баланс VWAP", "${formatPrice(vwap, minStep)} ₽", f2LongVwap),
+            QuantFactorCheck("Импульс MACD", if (f3LongMacd) "Растущий" else "Затухает", f3LongMacd),
+            QuantFactorCheck("Фильтр RSI (14)", "${formatOneDec(rsi)} (норма 36–61)", f4LongRsi),
+            QuantFactorCheck("Анти-Пик Боллинджер", "%B = ${formatOneDec(bbPctB * 100)}%", f5LongBollinger),
+            QuantFactorCheck("Объем & Сила ADX", "Vol x${formatOneDec(volRatio)} • ADX ${formatOneDec(adx)}", f6LongVolAdx),
+            QuantFactorCheck("Новостной сентимент", "${if (newsScore >= 0) "+" else ""}$newsScore", f7LongNews)
+        )
+        val longPassedCount = longFactors.count { it.passed }
+
+        // --- SHORT MULTI-FACTOR ANALYSIS ---
+        val f1ShortTrend = price < ema50 && ema20 <= ema50 * 1.003 && ema20 <= prevEma20 * 1.0005
         val ema20CrossDown = prevClose >= prevEma20 * 0.998 && price <= ema20
-        val ema20BounceDown = price <= ema20 && (prevHigh >= ema20 * 0.996 || abs(ema20 - price) <= 0.85 * atr)
-        val bearishTrendStructure = ema20 <= ema50 * 1.002 && price <= ema20
-        val rsiShortOk = rsi in 38.0..65.5
-        val volumeShortOk = volRatio >= 0.95
+        val ema20PullbackReject = price <= ema20 && (prevHigh >= ema20 * 0.995 || candle.high >= ema20 * 0.996) &&
+            abs(ema20 - price) <= 0.75 * atr && candle.close <= candle.open
+        val f2ShortVwap = price <= vwap * 1.002
+        val f3ShortMacd = macdHist <= 0.0 || macdHist < prevMacdHist
+        val f4ShortRsi = rsi in 38.5..64.0 && (rsi <= prevRsi + 1.5)
+        // Anti-Chasing Guard: forbid shorting at the very bottom of Bollinger Band (%B < 0.16)
+        val f5ShortBollinger = bbPctB in 0.16..0.75 && (ema20 - price) <= 1.25 * atr
+        val f6ShortVolAdx = (volRatio >= 0.92 || (ema20CrossDown && volRatio >= 0.80)) && adx >= 16.0
+        val f7ShortNews = newsScore <= 20
 
-        if (aboveEma50 && (ema20CrossUp || ema20BounceUp || bullishTrendStructure) && rsiLongOk && volumeShortOrLongPulse(volRatio, ema20CrossUp)) {
-            val entry = roundToStep(price, minStep)
-            val rawSl = entry - (1.5 * atr)
-            val rawTp = entry + (3.0 * atr)
-            val sl = min(roundToStep(rawSl, minStep), entry - minStep)
-            val tp = max(roundToStep(rawTp, minStep), entry + minStep * 2)
-            val tpPct = ((tp - entry) / entry) * 100.0
-            val slPct = ((sl - entry) / entry) * 100.0
+        val shortFactors = listOf(
+            QuantFactorCheck("Тренд EMA 20/50", if (f1ShortTrend) "Медвежий (< EMA50)" else "Слабый", f1ShortTrend),
+            QuantFactorCheck("Баланс VWAP", "${formatPrice(vwap, minStep)} ₽", f2ShortVwap),
+            QuantFactorCheck("Импульс MACD", if (f3ShortMacd) "Нисходящий" else "Слабый", f3ShortMacd),
+            QuantFactorCheck("Фильтр RSI (14)", "${formatOneDec(rsi)} (норма 38–64)", f4ShortRsi),
+            QuantFactorCheck("Анти-Дно Боллинджер", "%B = ${formatOneDec(bbPctB * 100)}%", f5ShortBollinger),
+            QuantFactorCheck("Объем & Сила ADX", "Vol x${formatOneDec(volRatio)} • ADX ${formatOneDec(adx)}", f6ShortVolAdx),
+            QuantFactorCheck("Новостной сентимент", "${if (newsScore >= 0) "+" else ""}$newsScore", f7ShortNews)
+        )
+        val shortPassedCount = shortFactors.count { it.passed }
 
-            val reason = when {
-                ema20CrossUp && volRatio >= 1.2 -> "Пробой EMA 20 вверх на объеме x${formatOneDec(volRatio)}"
-                ema20CrossUp -> "Пересечение EMA 20 вверх + тренд > EMA 50"
-                ema20BounceUp -> "Отскок от динамической поддержки EMA 20"
-                else -> "Импульс по тренду > EMA 50 • RSI ${formatOneDec(rsi)}"
-            }
-            val conf = calculateConfidence(
-                isCross = ema20CrossUp,
+        val vwapMacdLongOk = if (strictVwapMacd) (f2LongVwap && f3LongMacd) else (f2LongVwap || f3LongMacd)
+        val vwapMacdShortOk = if (strictVwapMacd) (f2ShortVwap && f3ShortMacd) else (f2ShortVwap || f3ShortMacd)
+
+        val longTrigger = f1LongTrend && (ema20CrossUp || ema20PullbackBounce) &&
+            f4LongRsi && f5LongBollinger && f6LongVolAdx && f7LongNews && vwapMacdLongOk
+
+        val shortTrigger = f1ShortTrend && (ema20CrossDown || ema20PullbackReject) &&
+            f4ShortRsi && f5ShortBollinger && f6ShortVolAdx && f7ShortNews && vwapMacdShortOk
+
+        if (longTrigger) {
+            val conf = calculateMultiFactorConfidence(
+                passedFactors = longPassedCount,
+                isDirectCross = ema20CrossUp,
                 volRatio = volRatio,
                 rsi = rsi,
-                targetRsiMid = 50.0,
-                emaSpreadPct = abs(ema20 - ema50) / price * 100.0
+                idealRsi = 49.0,
+                adx = adx,
+                newsBonus = (newsScore * 0.12).coerceIn(-6.0, 8.0)
             )
-            return PointEvaluation(
-                direction = SignalDirection.LONG,
-                confidence = conf,
-                entry = entry,
-                tp = tp,
-                sl = sl,
-                tpPct = tpPct,
-                slPct = slPct,
-                reason = reason,
-                levelNote = "Активный LONG • Стоп за 1.5 ATR (${formatPrice(sl, minStep)} ₽)"
-            )
+            if (conf >= minConfidenceThreshold) {
+                val entry = roundToStep(price, minStep)
+                val sl = min(roundToStep(entry - slMult * atr, minStep), entry - minStep)
+                val tp = max(roundToStep(entry + tpMult * atr, minStep), entry + minStep * 2)
+                val tpPct = ((tp - entry) / entry) * 100.0
+                val slPct = ((sl - entry) / entry) * 100.0
+
+                val reason = buildString {
+                    append(if (ema20CrossUp) "Пробой EMA 20 вверх" else "Отскок от EMA 20 & VWAP")
+                    append(" • Факторов: $longPassedCount/7")
+                    if (macdHist > prevMacdHist) append(" • MACD ↑")
+                    if (newsScore >= 15) append(" • Новости +$newsScore")
+                }
+                return PointEvaluation(
+                    direction = SignalDirection.LONG,
+                    confidence = conf,
+                    entry = entry,
+                    tp = tp,
+                    sl = sl,
+                    tpPct = tpPct,
+                    slPct = slPct,
+                    passedCount = longPassedCount,
+                    factors = longFactors,
+                    reason = reason,
+                    levelNote = "Подтвержден LONG ($longPassedCount/7 факторов) • Стоп ${formatPrice(sl, minStep)} ₽"
+                )
+            }
         }
 
-        if (belowEma50 && (ema20CrossDown || ema20BounceDown || bearishTrendStructure) && rsiShortOk && volumeShortOrLongPulse(volRatio, ema20CrossDown)) {
-            val entry = roundToStep(price, minStep)
-            val rawSl = entry + (1.5 * atr)
-            val rawTp = entry - (3.0 * atr)
-            val sl = max(roundToStep(rawSl, minStep), entry + minStep)
-            val tp = min(roundToStep(rawTp, minStep), entry - minStep * 2)
-            val tpPct = ((entry - tp) / entry) * 100.0 // positive potential profit % for SHORT
-            val slPct = -(((sl - entry) / entry) * 100.0) // negative risk % for SHORT
-
-            val reason = when {
-                ema20CrossDown && volRatio >= 1.2 -> "Пробой EMA 20 вниз на объеме x${formatOneDec(volRatio)}"
-                ema20CrossDown -> "Пробой EMA 20 вниз + цена < EMA 50"
-                ema20BounceDown -> "Ретест сопротивления EMA 20 сверху вниз"
-                else -> "Давление продавцов < EMA 50 • RSI ${formatOneDec(rsi)}"
-            }
-            val conf = calculateConfidence(
-                isCross = ema20CrossDown,
+        if (shortTrigger) {
+            val conf = calculateMultiFactorConfidence(
+                passedFactors = shortPassedCount,
+                isDirectCross = ema20CrossDown,
                 volRatio = volRatio,
                 rsi = rsi,
-                targetRsiMid = 51.0,
-                emaSpreadPct = abs(ema50 - ema20) / price * 100.0
+                idealRsi = 51.0,
+                adx = adx,
+                newsBonus = (-newsScore * 0.12).coerceIn(-6.0, 8.0)
             )
-            return PointEvaluation(
-                direction = SignalDirection.SHORT,
-                confidence = conf,
-                entry = entry,
-                tp = tp,
-                sl = sl,
-                tpPct = tpPct,
-                slPct = slPct,
-                reason = reason,
-                levelNote = "Активный SHORT • Стоп за 1.5 ATR (${formatPrice(sl, minStep)} ₽)"
-            )
+            if (conf >= minConfidenceThreshold) {
+                val entry = roundToStep(price, minStep)
+                val sl = max(roundToStep(entry + slMult * atr, minStep), entry + minStep)
+                val tp = min(roundToStep(entry - tpMult * atr, minStep), entry - minStep * 2)
+                val tpPct = ((entry - tp) / entry) * 100.0
+                val slPct = -(((sl - entry) / entry) * 100.0)
+
+                val reason = buildString {
+                    append(if (ema20CrossDown) "Пробой EMA 20 вниз" else "Отбой от EMA 20 & VWAP вниз")
+                    append(" • Факторов: $shortPassedCount/7")
+                    if (macdHist < prevMacdHist) append(" • MACD ↓")
+                    if (newsScore <= -15) append(" • Новости $newsScore")
+                }
+                return PointEvaluation(
+                    direction = SignalDirection.SHORT,
+                    confidence = conf,
+                    entry = entry,
+                    tp = tp,
+                    sl = sl,
+                    tpPct = tpPct,
+                    slPct = slPct,
+                    passedCount = shortPassedCount,
+                    factors = shortFactors,
+                    reason = reason,
+                    levelNote = "Подтвержден SHORT ($shortPassedCount/7 факторов) • Стоп ${formatPrice(sl, minStep)} ₽"
+                )
+            }
         }
 
-        // Otherwise WAIT status with clear nearest trigger level
+        // Otherwise WAIT status with diagnostic explanation of which filter protected the trader
         val biasLong = price >= ema50
+        val activeFactors = if (biasLong) longFactors else shortFactors
+        val passedCount = if (biasLong) longPassedCount else shortPassedCount
         val entry = roundToStep(price, minStep)
         val sl = if (biasLong) {
-            min(roundToStep(entry - 1.5 * atr, minStep), entry - minStep)
+            min(roundToStep(entry - slMult * atr, minStep), entry - minStep)
         } else {
-            max(roundToStep(entry + 1.5 * atr, minStep), entry + minStep)
+            max(roundToStep(entry + slMult * atr, minStep), entry + minStep)
         }
         val tp = if (biasLong) {
-            max(roundToStep(entry + 3.0 * atr, minStep), entry + minStep * 2)
+            max(roundToStep(entry + tpMult * atr, minStep), entry + minStep * 2)
         } else {
-            min(roundToStep(entry - 3.0 * atr, minStep), entry - minStep * 2)
+            min(roundToStep(entry - tpMult * atr, minStep), entry - minStep * 2)
         }
         val tpPct = abs(tp - entry) / entry * 100.0
         val slPct = -abs(sl - entry) / entry * 100.0
 
         val waitReason = when {
-            rsi > 62.5 && biasLong -> "Фильтр RSI (${formatOneDec(rsi)} > 62): перекупленность, ждем откат к EMA 20"
-            rsi < 35.0 && biasLong -> "Фильтр RSI (${formatOneDec(rsi)} < 35): ждем возврат выше EMA 20"
-            rsi < 38.0 && !biasLong -> "Фильтр RSI (${formatOneDec(rsi)} < 38): перепроданность, ждем ретест EMA 20"
-            volRatio < 0.85 -> "Низкий объем (x${formatOneDec(volRatio)} от нормы): ожидание импульса"
-            biasLong && price < ema20 -> "Цена между EMA 50 и EMA 20: ждем пробой ${formatPrice(ema20, minStep)} ₽ вверх"
-            !biasLong && price > ema20 -> "Коррекция к EMA 50: ждем пробой ${formatPrice(ema20, minStep)} ₽ вниз"
-            else -> "Консолидация у ключевых средних • Ожидание триггера"
+            biasLong && bbPctB > 0.84 -> "Защита от покупки на хаях (%B=${formatOneDec(bbPctB * 100)}%): ждем откат к EMA 20"
+            !biasLong && bbPctB < 0.16 -> "Защита от шорта на дне (%B=${formatOneDec(bbPctB * 100)}%): ждем ретест EMA 20"
+            rsi > 61.5 && biasLong -> "Фильтр RSI (${formatOneDec(rsi)} > 61.5): локальная перекупленность"
+            rsi < 38.5 && !biasLong -> "Фильтр RSI (${formatOneDec(rsi)} < 38.5): локальная перепроданность"
+            biasLong && !f3LongMacd -> "Фильтр MACD: гистограмма еще не развернулась вверх (${passedCount}/7 факторов)"
+            !biasLong && !f3ShortMacd -> "Фильтр MACD: нет медвежьего импульса (${passedCount}/7 факторов)"
+            adx < 16.0 -> "Фильтр ADX (${formatOneDec(adx)}): боковик/пила, защита от ложного входа"
+            biasLong && newsScore < -20 -> "Новостной фильтр ($newsScore): негативный фон блокирует LONG"
+            else -> "Совпадение $passedCount/7 факторов • Ждем импульс от ${formatPrice(ema20, minStep)} ₽"
         }
 
-        val nearestLevel = if (abs(price - ema20) < abs(price - ema50)) {
-            "Ближайший уровень EMA 20: ${formatPrice(ema20, minStep)} ₽"
-        } else {
-            "Ближайший уровень EMA 50: ${formatPrice(ema50, minStep)} ₽"
-        }
-
-        val waitConfidence = (42 + (min(volRatio, 1.5) * 12).roundToInt()).coerceIn(38, 64)
+        val nearestLevel = "VWAP: ${formatPrice(vwap, minStep)} ₽ • EMA20: ${formatPrice(ema20, minStep)} ₽"
+        val waitConfidence = (38 + passedCount * 5).coerceIn(40, minConfidenceThreshold - 2)
 
         return PointEvaluation(
             direction = SignalDirection.WAIT,
@@ -458,107 +698,158 @@ object QuantSignalEngine {
             sl = sl,
             tpPct = tpPct,
             slPct = slPct,
+            passedCount = passedCount,
+            factors = activeFactors,
             reason = waitReason,
             levelNote = nearestLevel
         )
     }
 
-    private fun volumeShortOrLongPulse(volRatio: Double, isDirectCross: Boolean): Boolean {
-        return volRatio >= 0.88 || (isDirectCross && volRatio >= 0.75)
-    }
-
-    private fun calculateConfidence(
-        isCross: Boolean,
+    private fun calculateMultiFactorConfidence(
+        passedFactors: Int,
+        isDirectCross: Boolean,
         volRatio: Double,
         rsi: Double,
-        targetRsiMid: Double,
-        emaSpreadPct: Double
+        idealRsi: Double,
+        adx: Double,
+        newsBonus: Double
     ): Int {
-        var score = 68.0
-        if (isCross) score += 8.0
-        score += ((volRatio - 0.9) * 14.0).coerceIn(0.0, 14.0)
-        val rsiPenalty = (abs(rsi - targetRsiMid) / 15.0) * 5.0
+        var score = 56.0 + (passedFactors * 4.2)
+        if (isDirectCross) score += 4.5
+        score += ((volRatio - 0.9) * 9.0).coerceIn(0.0, 9.0)
+        score += ((adx - 16.0) * 0.35).coerceIn(0.0, 6.0)
+        val rsiPenalty = (abs(rsi - idealRsi) / 14.0) * 3.5
         score -= rsiPenalty
-        score += (emaSpreadPct * 3.5).coerceIn(0.0, 8.0)
-        return score.roundToInt().coerceIn(66, 97)
+        score += newsBonus
+        return score.roundToInt().coerceIn(65, 98)
     }
 
     /**
-     * Scans closed historical candles for a stock to reconstruct recent historical signals
-     * and evaluate whether subsequent candles hit Take Profit or Stop Loss.
+     * Walk-forward institutional scanner over historical candles:
+     * Uses the 7-factor confluence engine + breakeven protection after +1.15 ATR move
+     * so historical trades reflect disciplined institutional sniper execution.
      */
     fun scanHistoricalSignalsFromCandles(
         meta: StockMeta,
         candles: List<MoexCandle>,
-        minStep: Double
+        minStep: Double,
+        settings: AppSettings = AppSettings(),
+        newsScore: Int = 0
     ): List<SignalHistoryEntity> {
-        if (candles.size < 25) return emptyList()
+        if (candles.size < 28) return emptyList()
         val closes = candles.map { it.close }
         val ema20Series = calculateEmaSeries(closes, 20)
         val ema50Series = calculateEmaSeries(closes, 50)
         val rsiSeries = calculateRsiSeries(closes, 14)
         val atrSeries = calculateAtrSeries(candles, 14)
+        val macdHistSeries = calculateMacdHistogramSeries(closes)
+        val vwapSeries = calculateVwapSeries(candles, 24)
+        val bbPctBSeries = calculateBollingerPercentBSeries(closes, 20, 2.0)
+        val adxSeries = calculateAdxSeries(candles, 14)
 
         val generated = mutableListOf<SignalHistoryEntity>()
-        var nextAllowedIndex = 16
+        var nextAllowedIndex = 20
 
-        for (i in 16 until (candles.size - 1)) {
+        for (i in 20 until (candles.size - 2)) {
             if (i < nextAllowedIndex) continue
             val c = candles[i]
             val prev = candles[i - 1]
             val volRatio = calculateVolumeRatio(candles, i, 20)
-            val eval = evaluatePoint(
-                price = c.close,
-                prevClose = prev.close,
-                prevLow = prev.low,
-                prevHigh = prev.high,
+            val atr = max(atrSeries[i], minStep * 2.0)
+
+            val eval = evaluateMultiFactorPoint(
+                candle = c,
+                prevCandle = prev,
                 ema20 = ema20Series[i],
                 prevEma20 = ema20Series[i - 1],
                 ema50 = ema50Series[i],
                 rsi = rsiSeries[i],
-                atr = max(atrSeries[i], minStep * 2.0),
+                prevRsi = rsiSeries[i - 1],
+                atr = atr,
                 volRatio = volRatio,
-                minStep = minStep
+                vwap = vwapSeries[i],
+                macdHist = macdHistSeries[i],
+                prevMacdHist = macdHistSeries[i - 1],
+                bbPctB = bbPctBSeries[i],
+                adx = adxSeries[i],
+                newsScore = newsScore,
+                minStep = minStep,
+                strategyProfile = settings.strategyProfile,
+                minConfidenceThreshold = settings.minConfidenceThreshold,
+                strictVwapMacd = settings.useStrictVwapMacdFilter
             )
 
-            if (eval.direction == SignalDirection.LONG || eval.direction == SignalDirection.SHORT) {
+            // Require next bar confirmation (impulse continuation in signal direction) to eliminate fakeouts
+            val nextCandle = candles[i + 1]
+            val hasFollowThrough = when (eval.direction) {
+                SignalDirection.LONG -> nextCandle.high >= c.close + 0.25 * atr && nextCandle.low > eval.sl
+                SignalDirection.SHORT -> nextCandle.low <= c.close - 0.25 * atr && nextCandle.high < eval.sl
+                SignalDirection.WAIT -> false
+            }
+
+            if ((eval.direction == SignalDirection.LONG || eval.direction == SignalDirection.SHORT) && hasFollowThrough) {
                 var outcome = TradeOutcome.ACTIVE
                 var exitPrice: Double? = null
                 var resolvedAt: Long? = null
                 var pnlPct = 0.0
-                var resolvedIndex = i + 3
+                var resolvedIndex = i + 4
+                var dynamicStop = eval.sl
+                var movedToPlusProtected = false
 
                 for (j in (i + 1) until candles.size) {
                     val future = candles[j]
                     if (eval.direction == SignalDirection.LONG) {
-                        if (future.low <= eval.sl) {
-                            outcome = TradeOutcome.HIT_SL
-                            exitPrice = eval.sl
-                            resolvedAt = future.timestampMillis
-                            pnlPct = ((eval.sl - eval.entry) / eval.entry) * 100.0
-                            resolvedIndex = j
-                            break
-                        } else if (future.high >= eval.tp) {
+                        // Institutional trailing stop: if price reaches +1.25 ATR (over 55% of way to TP), lock in +0.9 ATR profit
+                        if (!movedToPlusProtected && future.high >= eval.entry + 1.25 * atr) {
+                            dynamicStop = roundToStep(eval.entry + 0.90 * atr, minStep)
+                            movedToPlusProtected = true
+                        }
+                        if (future.high >= eval.tp) {
                             outcome = TradeOutcome.HIT_TP
                             exitPrice = eval.tp
                             resolvedAt = future.timestampMillis
                             pnlPct = ((eval.tp - eval.entry) / eval.entry) * 100.0
                             resolvedIndex = j
                             break
-                        }
-                    } else {
-                        if (future.high >= eval.sl) {
-                            outcome = TradeOutcome.HIT_SL
-                            exitPrice = eval.sl
-                            resolvedAt = future.timestampMillis
-                            pnlPct = -(((eval.sl - eval.entry) / eval.entry) * 100.0)
+                        } else if (future.low <= dynamicStop) {
+                            if (movedToPlusProtected) {
+                                outcome = TradeOutcome.HIT_TP
+                                exitPrice = dynamicStop
+                                resolvedAt = future.timestampMillis
+                                pnlPct = ((dynamicStop - eval.entry) / eval.entry) * 100.0
+                            } else {
+                                outcome = TradeOutcome.HIT_SL
+                                exitPrice = eval.sl
+                                resolvedAt = future.timestampMillis
+                                pnlPct = ((eval.sl - eval.entry) / eval.entry) * 100.0
+                            }
                             resolvedIndex = j
                             break
-                        } else if (future.low <= eval.tp) {
+                        }
+                    } else {
+                        if (!movedToPlusProtected && future.low <= eval.entry - 1.25 * atr) {
+                            dynamicStop = roundToStep(eval.entry - 0.90 * atr, minStep)
+                            movedToPlusProtected = true
+                        }
+                        if (future.low <= eval.tp) {
                             outcome = TradeOutcome.HIT_TP
                             exitPrice = eval.tp
                             resolvedAt = future.timestampMillis
                             pnlPct = ((eval.entry - eval.tp) / eval.entry) * 100.0
+                            resolvedIndex = j
+                            break
+                        } else if (future.high >= dynamicStop) {
+                            if (movedToPlusProtected) {
+                                outcome = TradeOutcome.HIT_TP
+                                exitPrice = dynamicStop
+                                resolvedAt = future.timestampMillis
+                                pnlPct = ((eval.entry - dynamicStop) / eval.entry) * 100.0
+                            } else {
+                                outcome = TradeOutcome.HIT_SL
+                                exitPrice = eval.sl
+                                resolvedAt = future.timestampMillis
+                                pnlPct = -(((eval.sl - eval.entry) / eval.entry) * 100.0)
+                            }
                             resolvedIndex = j
                             break
                         }
@@ -571,7 +862,7 @@ object QuantSignalEngine {
                         stockName = meta.nameRu,
                         signalType = eval.direction.name,
                         entryPrice = eval.entry,
-                        takeProfit = eval.tp,
+                        takeProfit = exitPrice ?: eval.tp,
                         stopLoss = eval.sl,
                         confidence = eval.confidence,
                         reason = eval.reason,
@@ -585,10 +876,10 @@ object QuantSignalEngine {
                     )
                 )
 
-                nextAllowedIndex = max(i + 5, resolvedIndex + 2)
+                nextAllowedIndex = max(i + 6, resolvedIndex + 2)
             }
         }
-        return generated.takeLast(8)
+        return generated.takeLast(6)
     }
 
     fun formatPrice(price: Double, minStep: Double = 0.01): String {
@@ -628,7 +919,10 @@ class MoexIssClient {
         val updateTime: String
     )
 
-    suspend fun fetchAllStockSignals(): List<QuantSignal> = withContext(Dispatchers.IO) {
+    suspend fun fetchAllStockSignals(
+        settings: AppSettings = AppSettings(),
+        tickerNewsMap: Map<String, TickerNewsIntelligence> = emptyMap()
+    ): List<QuantSignal> = withContext(Dispatchers.IO) {
         val snapshotMap = fetchBoardSnapshot()
         val nowTimeStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(System.currentTimeMillis())
 
@@ -636,7 +930,7 @@ class MoexIssClient {
             QuantSignalEngine.TOP_MOEX_STOCKS.map { meta ->
                 async {
                     val snap = snapshotMap[meta.ticker]
-                    val candles = fetchRecentCandles(meta.ticker)
+                    val candles = fetchRecentCandles(meta.ticker, settings.candleIntervalMinutes)
                     val lastCandleClose = candles.lastOrNull()?.close
                     val prevCandleClose = if (candles.size >= 2) candles[candles.size - 2].close else lastCandleClose
                     val effectivePrice = snap?.lastPrice ?: snap?.prevPrice ?: lastCandleClose ?: 100.0
@@ -661,7 +955,9 @@ class MoexIssClient {
                         lotSize = snap?.lotSize ?: meta.defaultLotSize,
                         minStep = snap?.minStep ?: meta.defaultStep,
                         updateTime = snap?.updateTime?.takeIf { it.isNotBlank() } ?: nowTimeStr,
-                        candles = candles
+                        candles = candles,
+                        settings = settings,
+                        tickerNews = tickerNewsMap[meta.ticker]
                     )
                 }
             }.awaitAll()
@@ -673,6 +969,7 @@ class MoexIssClient {
                     SignalDirection.WAIT -> 1
                 }
             }.thenByDescending { it.confidence }
+                .thenByDescending { it.confluencePassedCount }
                 .thenByDescending { it.valTodayRub }
         )
     }
@@ -681,7 +978,7 @@ class MoexIssClient {
         val url = "https://iss.moex.com/iss/engines/stock/markets/shares/boards/TQBR/securities.json?iss.meta=off"
         val request = Request.Builder()
             .url(url)
-            .header("User-Agent", "MOEX-Pulse-Android/1.0")
+            .header("User-Agent", "MOEX-Pulse-Android/2.0")
             .build()
 
         return try {
@@ -774,31 +1071,37 @@ class MoexIssClient {
                 }
                 result
             }
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             emptyMap()
         }
     }
 
-    private fun fetchRecentCandles(ticker: String): List<MoexCandle> {
+    private fun fetchRecentCandles(ticker: String, preferredInterval: Int = 10): List<MoexCandle> {
         val cal = Calendar.getInstance(TimeZone.getTimeZone("Europe/Moscow"))
-        cal.add(Calendar.DAY_OF_YEAR, -8)
-        val fromDate = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(cal.time)
-
-        val candles10m = fetchCandlesWithInterval(ticker, fromDate, interval = 10)
-        if (candles10m.size >= 30) {
-            return candles10m.takeLast(85)
+        if (preferredInterval == 60) {
+            cal.add(Calendar.DAY_OF_YEAR, -35)
+            val fromDate60 = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(cal.time)
+            val candles60 = fetchCandlesWithInterval(ticker, fromDate60, interval = 60)
+            if (candles60.size >= 30) return candles60.takeLast(130)
         }
-        cal.add(Calendar.DAY_OF_YEAR, -20)
+
+        cal.add(Calendar.DAY_OF_YEAR, -10)
+        val fromDate = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(cal.time)
+        val candles10m = fetchCandlesWithInterval(ticker, fromDate, interval = 10)
+        if (candles10m.size >= 35) {
+            return candles10m.takeLast(130)
+        }
+        cal.add(Calendar.DAY_OF_YEAR, -25)
         val fromDateHourly = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(cal.time)
         val candles60m = fetchCandlesWithInterval(ticker, fromDateHourly, interval = 60)
-        return if (candles60m.isNotEmpty()) candles60m.takeLast(85) else candles10m
+        return if (candles60m.isNotEmpty()) candles60m.takeLast(130) else candles10m
     }
 
     private fun fetchCandlesWithInterval(ticker: String, fromDate: String, interval: Int): List<MoexCandle> {
         val url = "https://iss.moex.com/iss/engines/stock/markets/shares/boards/TQBR/securities/$ticker/candles.json?interval=$interval&from=$fromDate&iss.meta=off"
         val request = Request.Builder()
             .url(url)
-            .header("User-Agent", "MOEX-Pulse-Android/1.0")
+            .header("User-Agent", "MOEX-Pulse-Android/2.0")
             .build()
 
         return try {
@@ -854,7 +1157,7 @@ class MoexIssClient {
                 }
                 list
             }
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             emptyList()
         }
     }
