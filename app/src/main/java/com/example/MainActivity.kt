@@ -96,9 +96,11 @@ import com.example.ui.SettingsAndPcScreen
 import com.example.ui.SignalCard
 import com.example.ui.SignalHistoryScreen
 import com.example.ui.TerminalHeader
+import android.widget.Toast
 import com.example.ui.TradingStrategyCrossoverLabCard
 import com.example.ui.TradingStrategyViewModel
 import com.example.ui.UltimateSearchAndFilterBar
+import com.example.ui.saveInstalledApkToDownloads
 import com.example.ui.theme.JetBrainsMonoFontFamily
 import com.example.ui.theme.LocalAppPalette
 import com.example.ui.theme.MoexPulseTheme
@@ -741,6 +743,7 @@ private fun SignalsFeedList(
 ) {
     val palette = LocalAppPalette.current
     val haptic = LocalHapticFeedback.current
+    val context = LocalContext.current
     val marketStrategies by strategyViewModel.currentMarketStrategies.collectAsStateWithLifecycle()
     val activeRoomStrategy by strategyViewModel.activeTradingStrategy.collectAsStateWithLifecycle()
     val crossoverSummary by strategyViewModel.crossoverSummary.collectAsStateWithLifecycle()
@@ -870,19 +873,45 @@ private fun SignalsFeedList(
                                 )
                             }
                         }
-                        Surface(
-                            shape = RoundedCornerShape(50),
-                            color = Color.White,
-                            border = BorderStroke(1.dp, Color.White)
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text(
-                                text = "WINRATE ${avgBacktestWinrate}%",
-                                fontFamily = JetBrainsMonoFontFamily,
-                                color = Color.Black,
-                                fontWeight = FontWeight.ExtraBold,
-                                fontSize = 10.sp,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                            )
+                            Surface(
+                                shape = RoundedCornerShape(50),
+                                color = palette.bgElevated,
+                                border = BorderStroke(1.dp, Color.White),
+                                modifier = Modifier
+                                    .clickable {
+                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        val msg = saveInstalledApkToDownloads(context)
+                                        Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+                                    }
+                                    .testTag("home_quick_download_apk_btn")
+                            ) {
+                                Text(
+                                    text = "📲 APK",
+                                    fontFamily = SpaceGroteskFontFamily,
+                                    color = Color.White,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    fontSize = 9.5.sp,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                )
+                            }
+                            Surface(
+                                shape = RoundedCornerShape(50),
+                                color = Color.White,
+                                border = BorderStroke(1.dp, Color.White)
+                            ) {
+                                Text(
+                                    text = "WINRATE ${avgBacktestWinrate}%",
+                                    fontFamily = JetBrainsMonoFontFamily,
+                                    color = Color.Black,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    fontSize = 10.sp,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                )
+                            }
                         }
                     }
 

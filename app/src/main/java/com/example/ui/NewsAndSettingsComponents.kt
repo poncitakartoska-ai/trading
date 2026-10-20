@@ -2,10 +2,16 @@ package com.example.ui
 
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.ui.graphics.Color
@@ -60,6 +66,10 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -79,6 +89,9 @@ import com.example.quant.NewsSentimentType
 import com.example.quant.QuantSignalEngine
 import com.example.ui.theme.JetBrainsMonoFontFamily
 import com.example.ui.theme.LocalAppPalette
+import com.example.ui.theme.SpaceGroteskFontFamily
+import java.io.File
+import java.io.FileInputStream
 import java.util.Locale
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -559,6 +572,17 @@ fun SettingsAndPcScreen(
     val palette = LocalAppPalette.current
     val context = LocalContext.current
     val activeStrategy: Strategy = settings.activeStrategy
+    var apkExportStatus by remember { mutableStateOf<String?>(null) }
+
+    val saveApkDocumentLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/vnd.android.package-archive")
+    ) { uri: Uri? ->
+        if (uri != null) {
+            val resultMsg = exportInstalledApkToUri(context, uri)
+            apkExportStatus = resultMsg
+            Toast.makeText(context, resultMsg, Toast.LENGTH_LONG).show()
+        }
+    }
 
     LazyColumn(
         modifier = modifier
@@ -568,6 +592,151 @@ fun SettingsAndPcScreen(
         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        // Direct APK Download & GitHub Actions Build Status Card
+        item(key = "apk_download_and_github_card") {
+            Card(
+                shape = RoundedCornerShape(18.dp),
+                colors = CardDefaults.cardColors(containerColor = palette.surface),
+                border = BorderStroke(1.2.dp, Color.White),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("apk_download_card")
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "📲 СКАЧАТЬ УСТАНОВОЧНЫЙ .APK ФАЙЛ",
+                                color = Color.White,
+                                fontFamily = SpaceGroteskFontFamily,
+                                fontWeight = FontWeight.ExtraBold,
+                                fontSize = 13.sp
+                            )
+                            Text(
+                                text = "Прямое сохранение готового подписанного APK и статус сборки GitHub Actions",
+                                color = palette.textSecondary,
+                                fontSize = 11.sp
+                            )
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(50),
+                            color = Color.White
+                        ) {
+                            Text(
+                                text = "JDK 21 • GRADLE 9.3.1",
+                                color = Color.Black,
+                                fontFamily = JetBrainsMonoFontFamily,
+                                fontWeight = FontWeight.ExtraBold,
+                                fontSize = 9.sp,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = {
+                                val msg = saveInstalledApkToDownloads(context)
+                                apkExportStatus = msg
+                                Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+                            },
+                            shape = RoundedCornerShape(50),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color.White,
+                                contentColor = Color.Black
+                            ),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(40.dp)
+                                .testTag("direct_download_apk_btn")
+                        ) {
+                            Text(
+                                text = "📲 СКАЧАТЬ APK В ЗАГРУЗКИ",
+                                fontFamily = SpaceGroteskFontFamily,
+                                fontWeight = FontWeight.ExtraBold,
+                                fontSize = 10.5.sp,
+                                maxLines = 1
+                            )
+                        }
+
+                        OutlinedButton(
+                            onClick = {
+                                saveApkDocumentLauncher.launch("Kvant_MOEX_Crypto_PRO.apk")
+                            },
+                            shape = RoundedCornerShape(50),
+                            border = BorderStroke(1.2.dp, Color.White),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(40.dp)
+                                .testTag("save_apk_as_btn")
+                        ) {
+                            Text(
+                                text = "💾 СОХРАНИТЬ APK КАК...",
+                                fontFamily = SpaceGroteskFontFamily,
+                                color = Color.White,
+                                fontWeight = FontWeight.ExtraBold,
+                                fontSize = 10.5.sp,
+                                maxLines = 1
+                            )
+                        }
+                    }
+
+                    if (apkExportStatus != null) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = palette.bg,
+                            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.6f)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = apkExportStatus!!,
+                                color = Color.White,
+                                fontFamily = JetBrainsMonoFontFamily,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 10.5.sp,
+                                modifier = Modifier.padding(10.dp)
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = palette.bg,
+                        border = BorderStroke(1.dp, palette.border),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(10.dp)) {
+                            Text(
+                                text = "✅ GitHub Actions (.github/workflows/build_apk.yml) исправлен:",
+                                color = Color.White,
+                                fontFamily = SpaceGroteskFontFamily,
+                                fontWeight = FontWeight.ExtraBold,
+                                fontSize = 11.sp
+                            )
+                            Spacer(modifier = Modifier.height(3.dp))
+                            Text(
+                                text = "• Обновлены JDK 21 (Temurin), Gradle 9.3.1 и Android SDK 36.1 под AGP 9.1.1.\n• На GitHub: откройте вкладку Actions → Build Kvant MOEX & Crypto PRO → Artifacts → Kvant-MOEX-Crypto-PRO-Android-APK.\n• В AI Studio (браузер): также доступно через меню ⚙️ (Settings в правом верхнем углу) → Generate APK.",
+                                color = palette.textSecondary,
+                                fontSize = 10.sp
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
         item {
             Card(
                 shape = RoundedCornerShape(18.dp),
@@ -891,3 +1060,61 @@ fun SettingsAndPcScreen(
         }
     }
 }
+
+fun saveInstalledApkToDownloads(context: Context): String {
+    return try {
+        val sourceFile = File(context.applicationInfo.sourceDir)
+        if (!sourceFile.exists()) {
+            return "Ошибка: исходный пакет приложения не найден."
+        }
+        val sizeMb = String.format(Locale.US, "%.2f", sourceFile.length() / (1024.0 * 1024.0))
+        val fileName = "Kvant_MOEX_Crypto_PRO_${System.currentTimeMillis() / 1000}.apk"
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val resolver = context.contentResolver
+            val contentValues = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+                put(MediaStore.MediaColumns.MIME_TYPE, "application/vnd.android.package-archive")
+                put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                put(MediaStore.Downloads.IS_PENDING, 1)
+            }
+            val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
+                ?: return "Не удалось создать файл в папке Загрузки."
+
+            resolver.openOutputStream(uri)?.use { outStream ->
+                FileInputStream(sourceFile).use { inStream ->
+                    inStream.copyTo(outStream, bufferSize = 64 * 1024)
+                }
+            }
+
+            contentValues.clear()
+            contentValues.put(MediaStore.Downloads.IS_PENDING, 0)
+            resolver.update(uri, contentValues, null, null)
+
+            "✅ Готово! Файл $fileName ($sizeMb МБ) сохранен в папку «Загрузки» (Downloads)."
+        } else {
+            val outDir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: context.filesDir
+            val destFile = File(outDir, fileName)
+            sourceFile.copyTo(destFile, overwrite = true)
+            "✅ Готово! APK ($sizeMb МБ) сохранен: ${destFile.absolutePath}"
+        }
+    } catch (e: Exception) {
+        "Ошибка сохранения APK: ${e.localizedMessage ?: "неизвестная ошибка"}"
+    }
+}
+
+fun exportInstalledApkToUri(context: Context, targetUri: Uri): String {
+    return try {
+        val sourceFile = File(context.applicationInfo.sourceDir)
+        val sizeMb = String.format(Locale.US, "%.2f", sourceFile.length() / (1024.0 * 1024.0))
+        context.contentResolver.openOutputStream(targetUri)?.use { outStream ->
+            FileInputStream(sourceFile).use { inStream ->
+                inStream.copyTo(outStream, bufferSize = 64 * 1024)
+            }
+        }
+        "✅ Установочный APK ($sizeMb МБ) успешно сохранен!"
+    } catch (e: Exception) {
+        "Ошибка записи APK: ${e.localizedMessage ?: "неизвестная ошибка"}"
+    }
+}
+

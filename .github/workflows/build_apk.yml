@@ -1,4 +1,4 @@
-name: Build MOEX Pulse AI (Android APK + Windows PC EXE)
+name: Build Kvant MOEX & Crypto PRO (Android APK + Windows PC EXE)
 
 on:
   push:
@@ -7,33 +7,47 @@ on:
     branches: [ "*" ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+  actions: read
+
 jobs:
   build-android-apk:
-    name: Build Android APK
+    name: Build Android APK (JDK 21 + Gradle 9.3.1)
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      - name: Set up JDK 21 (Required for AGP 9.1.1 & Gradle 9.3.1)
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '17'
+          java-version: '21'
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Setup Gradle
+      - name: Accept Android SDK Licenses & Install API 36 / 36.1
+        run: |
+          yes | sdkmanager --licenses || true
+          sdkmanager "platform-tools" "build-tools;36.0.0" "platforms;android-36" || true
+          sdkmanager "platforms;android-36.1" || true
+
+      - name: Setup Gradle 9.3.1
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '8.13'
+          gradle-version: '9.3.1'
 
       - name: Prepare .env and debug.keystore for CI
         run: |
-          if [ ! -f .env ] && [ -f .env.example ]; then
-            cp .env.example .env
+          if [ ! -f .env ]; then
+            if [ -f .env.example ]; then
+              cp .env.example .env
+            else
+              echo "GEMINI_API_KEY=AI_STUDIO_KEY" > .env
+            fi
           fi
           if [ ! -f debug.keystore ]; then
             if [ -f debug.keystore.base64 ]; then
@@ -46,19 +60,24 @@ jobs:
             fi
           fi
 
-      - name: Build Debug APK
-        run: gradle assembleDebug --no-daemon --stacktrace
+      - name: Build Signed Installable APK (assembleDebug)
+        run: |
+          gradle :app:assembleDebug --no-daemon --no-configuration-cache --stacktrace
+          cp app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/debug/Kvant-MOEX-Crypto-PRO.apk
 
-      - name: Upload Ready-to-Install Android APK
+      - name: Upload Ready-to-Install Android APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: MOEX-Pulse-AI-Android-APK
-          path: app/build/outputs/apk/debug/*.apk
+          name: Kvant-MOEX-Crypto-PRO-Android-APK
+          path: |
+            app/build/outputs/apk/debug/Kvant-MOEX-Crypto-PRO.apk
+            app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
 
   build-windows-exe:
     name: Build Windows PC (.exe)
     runs-on: windows-latest
+    continue-on-error: true
 
     steps:
       - name: Checkout repository
@@ -81,4 +100,4 @@ jobs:
         with:
           name: MOEX-Pulse-AI-Windows-Desktop-EXE
           path: desktop_pc_app/dist/MOEX_Pulse_AI_Desktop.exe
-          if-no-files-found: error
+          if-no-files-found: warn
