@@ -7,6 +7,9 @@ import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
+import org.xmlpull.v1.XmlPullParser
+import org.xmlpull.v1.XmlPullParserFactory
+import java.io.StringReader
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.concurrent.TimeUnit
@@ -36,7 +39,10 @@ data class MarketNewsItem(
     val sentiment: NewsSentimentType,
     val sentimentScore: Int, // -100..+100
     val impactLevel: NewsImpactLevel,
-    val tradingViewSymbolUrl: String?
+    val tradingViewSymbolUrl: String?,
+    val isRecent2Hours: Boolean = true,
+    val hasHighRiskStopWords: Boolean = false,
+    val stopWordsFound: List<String> = emptyList()
 )
 
 data class TickerNewsIntelligence(
@@ -44,7 +50,10 @@ data class TickerNewsIntelligence(
     val sentimentScore: Int, // -100..+100
     val sentimentType: NewsSentimentType,
     val headlineCount: Int,
-    val topCatalystNote: String
+    val topCatalystNote: String,
+    val recentBannerHeadline: String? = null,
+    val hasHighRiskWarning: Boolean = false,
+    val highRiskReason: String? = null
 )
 
 data class MarketNewsOverview(
@@ -64,22 +73,40 @@ object MoexNewsEngine {
         .readTimeout(7, TimeUnit.SECONDS)
         .build()
 
+    // Supports all 19 sector tickers + general market triggers
     private val tickerKeywords: Map<String, List<String>> = mapOf(
         "SBER" to listOf("sber", "сбер", "сбербанк", "греф", "банковск"),
-        "GAZP" to listOf("gazp", "газпром", "газов", "спг", "трубопровод"),
-        "LKOH" to listOf("lkoh", "лукойл", "нефт", "brent", "опек"),
-        "YDEX" to listOf("ydex", "яндекс", "yandex", "ит-сектор", "технологич", "ии"),
         "T" to listOf("t-bank", "т-технологи", "т-банк", "тинькофф", "tcsg", "финтех"),
+        "VTBR" to listOf("vtbr", "втб", "костин", "банк втб"),
+        "MOEX" to listOf("moex", "мосбирж", "московская биржа", "торги", "индекс мосбиржи", "ключевая ставка", "цб рф", "набиуллин"),
+        "LKOH" to listOf("lkoh", "лукойл", "нефт", "brent", "опек"),
         "ROSN" to listOf("rosn", "роснефт", "восток ойл", "сечин", "нефт"),
-        "NVTK" to listOf("nvtk", "новатэк", "арктик спг", "ямал спг"),
-        "GMKN" to listOf("gmkn", "норникел", "никел", "паллади", "медь"),
+        "NVTK" to listOf("nvtk", "новатэк", "арктик спг", "ямал спг", "михельсон"),
+        "GAZP" to listOf("gazp", "газпром", "газов", "спг", "трубопровод", "миллер"),
         "SNGS" to listOf("sngs", "сургутнефтегаз", "сургут", "кубышк", "валютн"),
         "TATN" to listOf("tatn", "татнефт", "татарстан", "нефтепереработ"),
-        "MTSS" to listOf("mtss", "мтс", "телеком", "связь", "экосистем"),
+        "GMKN" to listOf("gmkn", "норникел", "никел", "паллади", "медь", "потанин"),
         "CHMF" to listOf("chmf", "северстал", "сталь", "металлург", "мордашов"),
         "PLZL" to listOf("plzl", "полюс", "золот", "gold", "сухой лог"),
+        "NLMK" to listOf("nlmk", "нлмк", "липецк", "лисин", "сталь"),
         "ALRS" to listOf("alrs", "алрос", "алмаз", "бриллиант", "якут"),
-        "MOEX" to listOf("moex", "мосбирж", "московская биржа", "торги", "индекс мосбиржи", "ключевая ставка", "цб рф")
+        "YDEX" to listOf("ydex", "яндекс", "yandex", "ит-сектор", "технологич", "ии"),
+        "MTSS" to listOf("mtss", "мтс", "телеком", "связь", "экосистем"),
+        "POSI" to listOf("posi", "positive", "позитив", "кибербезопасн", "группа позитив"),
+        "VKCO" to listOf("vkco", "вк ", "vk ", "вконтакте", "соцсет")
+    )
+
+    // Module 7: Explicit stop-words that trigger High-Risk Warning on the stock card
+    private val highRiskStopWords: List<Pair<String, String>> = listOf(
+        "санкц" to "санкции",
+        "убыток" to "убыток",
+        "отмена дивиденд" to "отмена дивидендов",
+        "отказался от дивиденд" to "отмена дивидендов",
+        "не выплачивать дивиденд" to "отказ от дивидендов",
+        "допэмисс" to "допэмиссия",
+        "штраф" to "штраф",
+        "арест" to "арест активов",
+        "дефолт" to "риск дефолта"
     )
 
     private val positiveTerms: List<Pair<String, Int>> = listOf(
@@ -115,7 +142,8 @@ object MoexNewsEngine {
         "снижение прибыли" to -26,
         "отказался от дивидендов" to -38,
         "не выплачивать дивиденды" to -38,
-        "санкц" to -32,
+        "отмена дивиденд" to -38,
+        "санкц" to -34,
         "ограничен" to -22,
         "повышение ставк" to -26,
         "жестк" to -20,
@@ -125,10 +153,10 @@ object MoexNewsEngine {
         "сократил" to -20,
         "налог" to -20,
         "ндпи" to -24,
-        "допэмисс" to -32,
+        "допэмисс" to -34,
         "размыти" to -28,
         "авари" to -26,
-        "штраф" to -20,
+        "штраф" to -22,
         "давлени" to -18,
         "распродаж" to -26,
         "коррекц" to -16
@@ -139,32 +167,44 @@ object MoexNewsEngine {
     @Volatile
     private var lastFetchTimeMs: Long = 0L
 
+    suspend fun fetchLiveMarketNews(
+        liveSignals: List<QuantSignal> = emptyList(),
+        forceRefresh: Boolean = false
+    ): MarketNewsOverview = fetchNewsAndSentiment(liveSignals, forceRefresh)
+
     suspend fun fetchNewsAndSentiment(
-        liveSignals: List<QuantSignal>,
+        liveSignals: List<QuantSignal> = emptyList(),
         forceRefresh: Boolean = false
     ): MarketNewsOverview = withContext(Dispatchers.IO) {
         val now = System.currentTimeMillis()
         val existing = cachedOverview
-        if (!forceRefresh && existing != null && (now - lastFetchTimeMs) < 45_000L && existing.items.isNotEmpty()) {
+        if (!forceRefresh && existing != null && (now - lastFetchTimeMs) < 40_000L && existing.items.isNotEmpty()) {
             return@withContext enrichWithLiveOrderFlow(existing, liveSignals)
         }
 
         val combinedItems = coroutineScope {
-            val moexSiteDeferred = async { fetchMoexSiteNews() }
+            val smartLabDeferred = async {
+                fetchRssFeedWithXmlPullParser(
+                    url = "https://smart-lab.ru/rss/news/",
+                    sourceLabel = "Smart-Lab RSS"
+                )
+            }
             val rbcRssDeferred = async {
-                fetchRssFeed(
+                fetchRssFeedWithXmlPullParser(
                     url = "https://rssexport.rbc.ru/rbcnews/news/20/full.rss",
-                    sourceLabel = "РБК Инвестиции / Финансы"
+                    sourceLabel = "РБК Инвестиции"
                 )
             }
             val primeRssDeferred = async {
-                fetchRssFeed(
+                fetchRssFeedWithXmlPullParser(
                     url = "https://prime.ru/export/rss2/index.xml",
-                    sourceLabel = "ПРАЙМ Финансовая лента"
+                    sourceLabel = "ПРАЙМ / Интерфакс"
                 )
             }
+            val moexSiteDeferred = async { fetchMoexSiteNews() }
 
             val rawList = mutableListOf<MarketNewsItem>()
+            rawList.addAll(smartLabDeferred.await())
             rawList.addAll(moexSiteDeferred.await())
             rawList.addAll(rbcRssDeferred.await())
             rawList.addAll(primeRssDeferred.await())
@@ -174,23 +214,12 @@ object MoexNewsEngine {
         val orderFlowNews = buildOrderFlowCatalystNews(liveSignals)
         val allMerged = (orderFlowNews + combinedItems)
             .distinctBy { it.title.lowercase(Locale.getDefault()).take(55) }
-            .take(36)
+            .take(40)
 
         val overview = buildOverviewFromItems(allMerged, liveSignals)
         cachedOverview = overview
         lastFetchTimeMs = now
         overview
-    }
-
-    fun injectAiSearchNewsItems(aiItems: List<MarketNewsItem>, liveSignals: List<QuantSignal>): MarketNewsOverview {
-        val currentItems = cachedOverview?.items.orEmpty()
-        val merged = (aiItems + currentItems)
-            .distinctBy { it.title.lowercase(Locale.getDefault()).take(55) }
-            .take(40)
-        val updated = buildOverviewFromItems(merged, liveSignals)
-        cachedOverview = updated
-        lastFetchTimeMs = System.currentTimeMillis()
-        return updated
     }
 
     private fun enrichWithLiveOrderFlow(
@@ -200,7 +229,7 @@ object MoexNewsEngine {
         if (liveSignals.isEmpty()) return base
         val flowItems = buildOrderFlowCatalystNews(liveSignals)
         val nonFlowItems = base.items.filterNot { it.id.startsWith("quant_flow_") }
-        val merged = (flowItems + nonFlowItems).take(36)
+        val merged = (flowItems + nonFlowItems).take(40)
         return buildOverviewFromItems(merged, liveSignals)
     }
 
@@ -216,7 +245,6 @@ object MoexNewsEngine {
             val matching = items.filter { ticker in it.relatedTickers }
             val sig = signalByTicker[ticker]
 
-            // Combine news sentiment with live intraday order-flow momentum
             val newsScoreAvg = if (matching.isNotEmpty()) {
                 matching.map { it.sentimentScore }.average()
             } else {
@@ -231,7 +259,7 @@ object MoexNewsEngine {
             } else 0.0
 
             val combinedScore = if (matching.isNotEmpty()) {
-                (newsScoreAvg * 0.68 + flowBonus * 0.32).roundToInt().coerceIn(-95, 95)
+                (newsScoreAvg * 0.70 + flowBonus * 0.30).roundToInt().coerceIn(-95, 95)
             } else {
                 flowBonus.roundToInt().coerceIn(-80, 80)
             }
@@ -242,7 +270,16 @@ object MoexNewsEngine {
                 else -> NewsSentimentType.NEUTRAL
             }
 
-            val catalystNote = matching.firstOrNull()?.title ?: when {
+            val recentExternalNews = matching.firstOrNull { !it.id.startsWith("quant_flow_") && it.isRecent2Hours }
+                ?: matching.firstOrNull { it.isRecent2Hours }
+
+            val stopWordItem = matching.firstOrNull { it.hasHighRiskStopWords }
+            val hasHighRisk = stopWordItem != null
+            val highRiskNote = if (stopWordItem != null) {
+                "[РИСК-ФАКТОР: ${stopWordItem.stopWordsFound.joinToString(", ")}] ${stopWordItem.title.take(70)}"
+            } else null
+
+            val catalystNote = recentExternalNews?.title ?: matching.firstOrNull()?.title ?: when {
                 combinedScore >= 20 -> "Приток институционального объема и позитивный фон по сектору"
                 combinedScore <= -20 -> "Давление продавцов и осторожный новостной фон"
                 else -> "Нейтральный новостной фон • Торговля от уровней VWAP и EMA"
@@ -253,32 +290,35 @@ object MoexNewsEngine {
                 sentimentScore = combinedScore,
                 sentimentType = sentimentType,
                 headlineCount = matching.size,
-                topCatalystNote = catalystNote
+                topCatalystNote = catalystNote,
+                recentBannerHeadline = recentExternalNews?.title,
+                hasHighRiskWarning = hasHighRisk,
+                highRiskReason = highRiskNote
             )
         }
 
-        val bullish = items.count { it.sentiment == NewsSentimentType.BULLISH }
-        val bearish = items.count { it.sentiment == NewsSentimentType.BEARISH }
-        val neutral = items.count { it.sentiment == NewsSentimentType.NEUTRAL }
+        val bullCount = items.count { it.sentiment == NewsSentimentType.BULLISH }
+        val bearCount = items.count { it.sentiment == NewsSentimentType.BEARISH }
+        val neutCount = items.count { it.sentiment == NewsSentimentType.NEUTRAL }
 
-        val overallScore = if (tickerMap.isNotEmpty()) {
-            tickerMap.values.map { it.sentimentScore }.average().roundToInt().coerceIn(-100, 100)
+        val overallIndex = if (items.isNotEmpty()) {
+            items.map { it.sentimentScore }.average().roundToInt().coerceIn(-100, 100)
         } else 0
 
         val regimeLabel = when {
-            overallScore >= 25 -> "🟢 Уверенный Позитив (Risk-On на Мосбирже)"
-            overallScore >= 8 -> "🟢 Умеренно-бычий фон (Покупка сильных эмитентов)"
-            overallScore <= -25 -> "🔴 Осторожный / Медвежий фон (Защита капитала)"
-            overallScore <= -8 -> "🔴 Умеренное давление (Избирательный Short/Wait)"
-            else -> "⚖️ Сбалансированный рынок (Фокус на точечных сигналах Quant)"
+            overallIndex >= 18 -> "Уверенный позитив на рынке РФ (Risk-On)"
+            overallIndex >= 6 -> "Умеренно-бычий новостной фон"
+            overallIndex <= -18 -> "Давление негативных новостей (Risk-Off)"
+            overallIndex <= -6 -> "Осторожный / смешанный фон"
+            else -> "Нейтральный баланс новостей"
         }
 
         return MarketNewsOverview(
-            marketSentimentIndex = overallScore,
+            marketSentimentIndex = overallIndex,
             marketRegimeLabel = regimeLabel,
-            bullishCount = bullish,
-            bearishCount = bearish,
-            neutralCount = neutral,
+            bullishCount = bullCount,
+            bearishCount = bearCount,
+            neutralCount = neutCount,
             items = items,
             tickerIntelligence = tickerMap
         )
@@ -286,99 +326,50 @@ object MoexNewsEngine {
 
     private fun buildOrderFlowCatalystNews(liveSignals: List<QuantSignal>): List<MarketNewsItem> {
         if (liveSignals.isEmpty()) return emptyList()
+        val list = mutableListOf<MarketNewsItem>()
         val nowStr = SimpleDateFormat("HH:mm", Locale.getDefault()).format(System.currentTimeMillis())
-        val items = mutableListOf<MarketNewsItem>()
 
-        // 1. Top Volume & Active Signal Leader
-        val topActive = liveSignals
-            .filter { it.direction == SignalDirection.LONG || it.direction == SignalDirection.SHORT }
-            .maxByOrNull { it.confidence }
+        val volumeLeaders = liveSignals.filter { it.volumeRatio >= 1.25 || abs(it.changePercent) >= 1.2 }
+            .sortedByDescending { abs(it.changePercent) * it.volumeRatio }
+            .take(5)
 
-        if (topActive != null) {
-            val isLong = topActive.direction == SignalDirection.LONG
-            val score = if (isLong) topActive.confidence / 2 + 25 else -(topActive.confidence / 2 + 25)
-            items.add(
+        for (sig in volumeLeaders) {
+            val isBull = sig.changePercent >= 0.0
+            val sentType = if (isBull) NewsSentimentType.BULLISH else NewsSentimentType.BEARISH
+            val score = (sig.changePercent * 14.0).roundToInt().coerceIn(-85, 85)
+            val actionWord = if (isBull) "всплеск спроса и рост" else "давление продавцов и снижение"
+            val title = "${sig.name} (${sig.ticker}): $actionWord ${QuantSignalEngine.formatSignedPercent(sig.changePercent)} на объеме x${QuantSignalEngine.formatOneDec(sig.volumeRatio)}"
+            val summary = "Алго-радар Quant 2.0 зафиксировал активность в бумаге ${sig.ticker}. " +
+                "Текущая цена ${QuantSignalEngine.formatPrice(sig.currentPrice, sig.minStep)} ₽, " +
+                "VWAP ${QuantSignalEngine.formatPrice(sig.vwap, sig.minStep)} ₽, RSI ${QuantSignalEngine.formatOneDec(sig.rsi14)}."
+
+            list.add(
                 MarketNewsItem(
-                    id = "quant_flow_top_${topActive.ticker}",
-                    title = "Квант-радар MOEX: ${topActive.ticker} (${topActive.name}) формирует ${topActive.direction.label} (${topActive.confidence}%)",
-                    summary = "Алгоритмический детектор зафиксировал сильное совпадение факторов по ${topActive.ticker}: ${topActive.reason}. " +
-                        "Вход: ${QuantSignalEngine.formatPrice(topActive.entryPrice, topActive.minStep)} ₽, " +
-                        "TP: ${QuantSignalEngine.formatPrice(topActive.takeProfit, topActive.minStep)} ₽, " +
-                        "SL: ${QuantSignalEngine.formatPrice(topActive.stopLoss, topActive.minStep)} ₽.",
-                    sourceName = "MOEX Quant Алго-Радар",
-                    publishedTime = "LIVE • $nowStr",
-                    url = QuantSignalEngine.tradingViewUrl(topActive.ticker),
-                    relatedTickers = listOf(topActive.ticker),
-                    sentiment = if (isLong) NewsSentimentType.BULLISH else NewsSentimentType.BEARISH,
-                    sentimentScore = score.coerceIn(-95, 95),
-                    impactLevel = NewsImpactLevel.HIGH,
-                    tradingViewSymbolUrl = QuantSignalEngine.tradingViewUrl(topActive.ticker)
+                    id = "quant_flow_${sig.ticker}",
+                    title = title,
+                    summary = summary,
+                    sourceName = "MOEX Quant 2.0 Radar",
+                    publishedTime = "Сегодня $nowStr",
+                    url = sig.tradingViewUrl,
+                    relatedTickers = listOf(sig.ticker),
+                    sentiment = sentType,
+                    sentimentScore = if (score == 0) (if (isBull) 22 else -22) else score,
+                    impactLevel = if (abs(sig.changePercent) >= 2.0 || sig.volumeRatio >= 1.6) NewsImpactLevel.HIGH else NewsImpactLevel.MEDIUM,
+                    tradingViewSymbolUrl = sig.tradingViewUrl,
+                    isRecent2Hours = true,
+                    hasHighRiskStopWords = false,
+                    stopWordsFound = emptyList()
                 )
             )
         }
-
-        // 2. Abnormal Volume Spike Detection
-        val volLeader = liveSignals.maxByOrNull { it.volumeRatio }
-        if (volLeader != null && volLeader.volumeRatio >= 1.15) {
-            val isBull = volLeader.changePercent >= 0.0
-            val volPct = String.format(Locale.US, "%.1f", volLeader.volumeRatio)
-            val valBillions = String.format(Locale.US, "%.2f", volLeader.valTodayRub / 1_000_000_000.0)
-            items.add(
-                MarketNewsItem(
-                    id = "quant_flow_vol_${volLeader.ticker}",
-                    title = "Всплеск ликвидности в ${volLeader.ticker} (${volLeader.name}): объем x$volPct к норме ($valBillions млрд ₽)",
-                    summary = "Крупные участники (Smart Money) проявляют повышенную активность в ${volLeader.ticker}. " +
-                        "Внутридневное изменение: ${QuantSignalEngine.formatSignedPercent(volLeader.changePercent)}, " +
-                        "цена относительно VWAP: ${QuantSignalEngine.formatPrice(volLeader.vwap, volLeader.minStep)} ₽.",
-                    sourceName = "Поток Ордеров TQBR",
-                    publishedTime = "LIVE • $nowStr",
-                    url = QuantSignalEngine.tradingViewUrl(volLeader.ticker),
-                    relatedTickers = listOf(volLeader.ticker),
-                    sentiment = if (isBull) NewsSentimentType.BULLISH else NewsSentimentType.BEARISH,
-                    sentimentScore = if (isBull) 48 else -48,
-                    impactLevel = NewsImpactLevel.HIGH,
-                    tradingViewSymbolUrl = QuantSignalEngine.tradingViewUrl(volLeader.ticker)
-                )
-            )
-        }
-
-        // 3. Sector Rotation Summary (Oil & Gas vs Financials vs Tech/Metals)
-        val financials = liveSignals.filter { it.ticker in listOf("SBER", "T", "MOEX") }
-        val oilGas = liveSignals.filter { it.ticker in listOf("LKOH", "ROSN", "NVTK", "TATN", "GAZP", "SNGS") }
-        if (financials.isNotEmpty() && oilGas.isNotEmpty()) {
-            val finAvg = financials.map { it.changePercent }.average()
-            val oilAvg = oilGas.map { it.changePercent }.average()
-            val leaderSectorName = if (finAvg >= oilAvg) "Финансовый сектор (SBER, T, MOEX)" else "Нефтегазовый сектор (LKOH, ROSN, TATN)"
-            val leaderTickers = if (finAvg >= oilAvg) listOf("SBER", "T", "MOEX") else listOf("LKOH", "ROSN", "TATN")
-            val bestStock = liveSignals.filter { it.ticker in leaderTickers }.maxByOrNull { it.changePercent } ?: liveSignals.first()
-            val avgMove = maxOf(finAvg, oilAvg)
-
-            items.add(
-                MarketNewsItem(
-                    id = "quant_flow_sector_rotation",
-                    title = "Секторальная ротация Мосбиржи: лидирует $leaderSectorName (${QuantSignalEngine.formatSignedPercent(avgMove)})",
-                    summary = "Институциональный капитал фокусируется в бумагах ${leaderTickers.joinToString(", ")}. " +
-                        "Фаворит сектора по динамике — ${bestStock.ticker} (${bestStock.name}) с ценой ${QuantSignalEngine.formatPrice(bestStock.currentPrice, bestStock.minStep)} ₽.",
-                    sourceName = "Макро-Аналитика MOEX",
-                    publishedTime = "Сегодня • $nowStr",
-                    url = QuantSignalEngine.tradingViewUrl(bestStock.ticker),
-                    relatedTickers = leaderTickers,
-                    sentiment = if (avgMove >= -0.15) NewsSentimentType.BULLISH else NewsSentimentType.BEARISH,
-                    sentimentScore = (avgMove * 22.0).roundToInt().coerceIn(-65, 65),
-                    impactLevel = NewsImpactLevel.MEDIUM,
-                    tradingViewSymbolUrl = QuantSignalEngine.tradingViewUrl(bestStock.ticker)
-                )
-            )
-        }
-
-        return items
+        return list
     }
 
     private fun fetchMoexSiteNews(): List<MarketNewsItem> {
         val url = "https://iss.moex.com/iss/sitenews.json?iss.meta=off"
         val request = Request.Builder()
             .url(url)
-            .header("User-Agent", "MOEX-Pulse-Android/2.0")
+            .header("User-Agent", "MOEX-Pulse-Android/3.0")
             .build()
 
         return try {
@@ -392,124 +383,177 @@ object MoexNewsEngine {
 
                 var idIdx = -1
                 var titleIdx = -1
-                var pubIdx = -1
+                var publishedIdx = -1
                 for (i in 0 until cols.length()) {
                     when (cols.optString(i).lowercase(Locale.US)) {
                         "id" -> idIdx = i
                         "title" -> titleIdx = i
-                        "published_at" -> pubIdx = i
+                        "published_at", "modified_at" -> if (publishedIdx == -1) publishedIdx = i
                     }
                 }
-                if (titleIdx < 0) return emptyList()
+                if (titleIdx == -1) return emptyList()
 
-                val list = mutableListOf<MarketNewsItem>()
-                val limit = minOf(data.length(), 18)
+                val items = mutableListOf<MarketNewsItem>()
+                val limit = minOf(data.length(), 20)
                 for (i in 0 until limit) {
                     val row = data.optJSONArray(i) ?: continue
-                    val id = if (idIdx >= 0) row.optString(idIdx, "$i") else "$i"
-                    val rawTitle = row.optString(titleIdx, "").let(::cleanHtmlEntities).trim()
+                    val newsId = if (idIdx >= 0) row.optString(idIdx, i.toString()) else i.toString()
+                    val rawTitle = cleanHtmlEntities(row.optString(titleIdx, "")).trim()
                     if (rawTitle.length < 8) continue
-                    val pubTime = if (pubIdx >= 0) row.optString(pubIdx, "").take(16) else "Сегодня"
+                    val pubTime = if (publishedIdx >= 0) {
+                        row.optString(publishedIdx, "").take(16)
+                    } else "Сегодня"
 
-                    val analysis = analyzeNewsText(rawTitle, "Официальное сообщение Московской Биржи (MOEX ISS)")
+                    val analysis = analyzeNewsText(rawTitle, "")
                     val primaryTicker = analysis.tickers.firstOrNull() ?: "MOEX"
+                    val tickersList = if (analysis.tickers.isEmpty()) listOf("MOEX") else analysis.tickers
 
-                    list.add(
+                    items.add(
                         MarketNewsItem(
-                            id = "moex_iss_$id",
+                            id = "moex_iss_$newsId",
                             title = rawTitle,
-                            summary = "Официальный релиз Московской Биржи • Влияние на ${analysis.tickers.ifEmpty { listOf("MOEX") }.joinToString(", ")}",
-                            sourceName = "Московская Биржа (ISS)",
+                            summary = "Официальное сообщение Московской Биржи (MOEX ISS) • Влияние на индекс IMOEX и режим торгов TQBR.",
+                            sourceName = "Мосбиржа (ISS)",
                             publishedTime = pubTime,
-                            url = "https://www.moex.com/n$id",
-                            relatedTickers = analysis.tickers.ifEmpty { listOf("MOEX") },
+                            url = "https://www.moex.com/n$newsId",
+                            relatedTickers = tickersList,
                             sentiment = analysis.sentiment,
                             sentimentScore = analysis.score,
                             impactLevel = analysis.impact,
-                            tradingViewSymbolUrl = QuantSignalEngine.tradingViewUrl(primaryTicker)
+                            tradingViewSymbolUrl = QuantSignalEngine.tradingViewUrl(primaryTicker),
+                            isRecent2Hours = true,
+                            hasHighRiskStopWords = analysis.stopWords.isNotEmpty(),
+                            stopWordsFound = analysis.stopWords
                         )
                     )
                 }
-                list
+                items
             }
         } catch (_: Exception) {
             emptyList()
         }
     }
 
-    private fun fetchRssFeed(url: String, sourceLabel: String): List<MarketNewsItem> {
+    /**
+     * Module 7: Lightweight native Android XmlPullParser RSS reader (without heavy dependencies).
+     */
+    private fun fetchRssFeedWithXmlPullParser(url: String, sourceLabel: String): List<MarketNewsItem> {
         val request = Request.Builder()
             .url(url)
-            .header("User-Agent", "Mozilla/5.0 (Android; MOEX-Pulse-Quant/2.0)")
+            .header("User-Agent", "Mozilla/5.0 (Android; MOEX-Pulse-AI-Pro/3.0)")
             .build()
 
         return try {
             httpClient.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) return emptyList()
-                val xml = response.body?.string() ?: return emptyList()
-                parseRssItems(xml, sourceLabel)
+                val xmlString = response.body?.string() ?: return emptyList()
+                parseRssWithXmlPullParser(xmlString, sourceLabel)
             }
         } catch (_: Exception) {
             emptyList()
         }
     }
 
-    internal fun parseRssItems(xml: String, sourceLabel: String): List<MarketNewsItem> {
-        val itemRegex = Regex("<item[\\s>](.*?)</item>", setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE))
-        val titleRegex = Regex("<title>(?:<!\\[CDATA\\[)?(.*?)(?:\\]\\]>)?\\s*</title>", setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE))
-        val descRegex = Regex("<description>(?:<!\\[CDATA\\[)?(.*?)(?:\\]\\]>)?\\s*</description>", setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE))
-        val linkRegex = Regex("<link>(?:<!\\[CDATA\\[)?(.*?)(?:\\]\\]>)?\\s*</link>", setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE))
-        val dateRegex = Regex("<pubDate>(.*?)</pubDate>", setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE))
-
+    internal fun parseRssWithXmlPullParser(xml: String, sourceLabel: String): List<MarketNewsItem> {
         val results = mutableListOf<MarketNewsItem>()
-        val matches = itemRegex.findAll(xml).take(25)
-        var idx = 0
+        try {
+            val factory = XmlPullParserFactory.newInstance()
+            factory.isNamespaceAware = false
+            val parser = factory.newPullParser()
+            parser.setInput(StringReader(xml))
 
-        for (match in matches) {
-            val block = match.groupValues[1]
-            val title = titleRegex.find(block)?.groupValues?.getOrNull(1)?.let(::cleanHtmlEntities)?.trim().orEmpty()
-            if (title.length < 10) continue
-            val desc = descRegex.find(block)?.groupValues?.getOrNull(1)?.let(::cleanHtmlEntities)?.trim().orEmpty()
-                .replace(Regex("<[^>]+>"), " ")
-                .replace(Regex("\\s+"), " ")
-                .take(260)
-            val link = linkRegex.find(block)?.groupValues?.getOrNull(1)?.trim().orEmpty()
-            val pubDate = dateRegex.find(block)?.groupValues?.getOrNull(1)?.trim()?.take(22) ?: "Сегодня"
+            var eventType = parser.eventType
+            var insideItem = false
+            var currentTag = ""
+            var title = ""
+            var description = ""
+            var link = ""
+            var pubDate = ""
+            var idx = 0
 
-            val analysis = analyzeNewsText(title, desc)
-            // Keep items that either mention a MOEX stock/keyword or have financial keywords
-            val isFinancialRelevant = analysis.tickers.isNotEmpty() ||
-                abs(analysis.score) >= 14 ||
-                title.lowercase(Locale.getDefault()).let { t ->
-                    t.contains("акци") || t.contains("рубл") || t.contains("цб") ||
-                        t.contains("ставк") || t.contains("бирж") || t.contains("нефт") ||
-                        t.contains("индекс") || t.contains("дивиденд") || t.contains("отчет") ||
-                        t.contains("прибыл") || t.contains("инвест") || t.contains("рынок") ||
-                        t.contains("экономик") || t.contains("банк")
+            while (eventType != XmlPullParser.END_DOCUMENT && results.size < 16) {
+                when (eventType) {
+                    XmlPullParser.START_TAG -> {
+                        val tagName = parser.name?.lowercase(Locale.US).orEmpty()
+                        if (tagName == "item") {
+                            insideItem = true
+                            title = ""
+                            description = ""
+                            link = ""
+                            pubDate = ""
+                        } else if (insideItem) {
+                            currentTag = tagName
+                        }
+                    }
+                    XmlPullParser.TEXT -> {
+                        if (insideItem && currentTag.isNotEmpty()) {
+                            val textChunk = parser.text.orEmpty()
+                            when (currentTag) {
+                                "title" -> title += textChunk
+                                "description" -> description += textChunk
+                                "link" -> link += textChunk
+                                "pubdate", "dc:date" -> pubDate += textChunk
+                            }
+                        }
+                    }
+                    XmlPullParser.END_TAG -> {
+                        val tagName = parser.name?.lowercase(Locale.US).orEmpty()
+                        if (tagName == "item" && insideItem) {
+                            insideItem = false
+                            val cleanTitle = cleanHtmlEntities(title).trim()
+                            val cleanDesc = cleanHtmlEntities(description)
+                                .replace(Regex("<[^>]+>"), " ")
+                                .replace(Regex("\\s+"), " ")
+                                .trim()
+                                .take(250)
+
+                            if (cleanTitle.length >= 10) {
+                                val analysis = analyzeNewsText(cleanTitle, cleanDesc)
+                                val isFinancialRelevant = analysis.tickers.isNotEmpty() ||
+                                    abs(analysis.score) >= 14 ||
+                                    analysis.stopWords.isNotEmpty() ||
+                                    cleanTitle.lowercase(Locale.getDefault()).let { t ->
+                                        t.contains("акци") || t.contains("рубл") || t.contains("цб") ||
+                                            t.contains("ставк") || t.contains("бирж") || t.contains("нефт") ||
+                                            t.contains("индекс") || t.contains("дивиденд") || t.contains("отчет") ||
+                                            t.contains("прибыл") || t.contains("инвест") || t.contains("рынок") ||
+                                            t.contains("сбер") || t.contains("газпром") || t.contains("лукойл") ||
+                                            t.contains("яндекс")
+                                    }
+
+                                if (isFinancialRelevant) {
+                                    idx++
+                                    val primaryTicker = analysis.tickers.firstOrNull()
+                                    results.add(
+                                        MarketNewsItem(
+                                            id = "xml_rss_${sourceLabel.hashCode()}_$idx",
+                                            title = cleanTitle,
+                                            summary = if (cleanDesc.isNotBlank() && cleanDesc != cleanTitle) cleanDesc else "Срочная лента • $sourceLabel",
+                                            sourceName = sourceLabel,
+                                            publishedTime = pubDate.trim().take(22).ifBlank { "Сегодня" },
+                                            url = link.trim().ifBlank {
+                                                if (primaryTicker != null) QuantSignalEngine.tradingViewUrl(primaryTicker)
+                                                else "https://ru.tradingview.com/markets/stocks-russia/"
+                                            },
+                                            relatedTickers = analysis.tickers,
+                                            sentiment = analysis.sentiment,
+                                            sentimentScore = analysis.score,
+                                            impactLevel = analysis.impact,
+                                            tradingViewSymbolUrl = primaryTicker?.let { QuantSignalEngine.tradingViewUrl(it) },
+                                            isRecent2Hours = true,
+                                            hasHighRiskStopWords = analysis.stopWords.isNotEmpty(),
+                                            stopWordsFound = analysis.stopWords
+                                        )
+                                    )
+                                }
+                            }
+                        }
+                        currentTag = ""
+                    }
                 }
-
-            if (!isFinancialRelevant) continue
-            idx++
-            val primaryTicker = analysis.tickers.firstOrNull()
-            results.add(
-                MarketNewsItem(
-                    id = "rss_${sourceLabel.hashCode()}_$idx",
-                    title = title,
-                    summary = if (desc.isNotBlank() && desc != title) desc else "Финансовая сводка • $sourceLabel",
-                    sourceName = sourceLabel,
-                    publishedTime = pubDate,
-                    url = link.ifBlank {
-                        if (primaryTicker != null) QuantSignalEngine.tradingViewUrl(primaryTicker)
-                        else "https://ru.tradingview.com/markets/stocks-russia/"
-                    },
-                    relatedTickers = analysis.tickers,
-                    sentiment = analysis.sentiment,
-                    sentimentScore = analysis.score,
-                    impactLevel = analysis.impact,
-                    tradingViewSymbolUrl = primaryTicker?.let { QuantSignalEngine.tradingViewUrl(it) }
-                )
-            )
-            if (results.size >= 14) break
+                eventType = parser.next()
+            }
+        } catch (_: Exception) {
         }
         return results
     }
@@ -518,7 +562,8 @@ object MoexNewsEngine {
         val tickers: List<String>,
         val score: Int,
         val sentiment: NewsSentimentType,
-        val impact: NewsImpactLevel
+        val impact: NewsImpactLevel,
+        val stopWords: List<String>
     )
 
     fun analyzeNewsText(title: String, body: String): TextSentimentAnalysis {
@@ -531,6 +576,13 @@ object MoexNewsEngine {
             }
         }
 
+        val matchedStopWords = mutableListOf<String>()
+        for ((stem, label) in highRiskStopWords) {
+            if (combined.contains(stem)) {
+                matchedStopWords.add(label)
+            }
+        }
+
         var rawScore = 0
         for ((term, weight) in positiveTerms) {
             if (combined.contains(term)) {
@@ -539,11 +591,14 @@ object MoexNewsEngine {
         }
         for ((term, weight) in negativeTerms) {
             if (combined.contains(term)) {
-                rawScore += weight
+                rawScore -= weight
             }
         }
 
-        // Title matches carry extra weight
+        if (matchedStopWords.isNotEmpty()) {
+            rawScore -= 25 * matchedStopWords.size
+        }
+
         val lowerTitle = title.lowercase(Locale.getDefault())
         if (lowerTitle.contains("дивиденд") || lowerTitle.contains("рекорд") || lowerTitle.contains("вырос")) {
             rawScore += 18
@@ -560,7 +615,7 @@ object MoexNewsEngine {
         }
 
         val impact = when {
-            abs(finalScore) >= 35 || (detectedTickers.isNotEmpty() && abs(finalScore) >= 20) -> NewsImpactLevel.HIGH
+            matchedStopWords.isNotEmpty() || abs(finalScore) >= 35 || (detectedTickers.isNotEmpty() && abs(finalScore) >= 20) -> NewsImpactLevel.HIGH
             detectedTickers.isNotEmpty() || abs(finalScore) >= 15 -> NewsImpactLevel.MEDIUM
             else -> NewsImpactLevel.INFO
         }
@@ -569,7 +624,8 @@ object MoexNewsEngine {
             tickers = detectedTickers.distinct().take(4),
             score = finalScore,
             sentiment = sentiment,
-            impact = impact
+            impact = impact,
+            stopWords = matchedStopWords.distinct()
         )
     }
 

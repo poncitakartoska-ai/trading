@@ -1,0 +1,256 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/bg_widget_tradingview_dark"
+    android:orientation="vertical"
+    android:padding="12dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingBottom="8dp">
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/widget_title"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="MOEX PULSE ULTIMATE • TV"
+                android:textColor="#E8EDF7"
+                android:textSize="13sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/widget_subtitle_time"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="TQBR Live • Мульти-факторный радар"
+                android:textColor="#787B86"
+                android:textSize="10sp" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/widget_imoex_badge"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginEnd="6dp"
+            android:background="@drawable/bg_widget_badge_imoex"
+            android:paddingLeft="8dp"
+            android:paddingTop="3dp"
+            android:paddingRight="8dp"
+            android:paddingBottom="3dp"
+            android:text="IMOEX 2850.0 (+0.6%)"
+            android:textColor="#D1D4DC"
+            android:textSize="10sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/widget_refresh_btn"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:background="@drawable/bg_widget_card_row"
+            android:paddingLeft="8dp"
+            android:paddingTop="3dp"
+            android:paddingRight="8dp"
+            android:paddingBottom="3dp"
+            android:text="↻"
+            android:textColor="#2962FF"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/widget_row_1"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="6dp"
+        android:background="@drawable/bg_widget_card_row"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingLeft="10dp"
+        android:paddingTop="7dp"
+        android:paddingRight="10dp"
+        android:paddingBottom="7dp">
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/widget_row1_title"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="🟢 SBER • LONG (88%)"
+                android:textColor="#00E676"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/widget_row1_levels"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Вх 285.5 • TP1 289.2 • TP2 293.0 • SL 281.8"
+                android:textColor="#9598A1"
+                android:textSize="10sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:gravity="end"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/widget_row1_price"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="285.50 ₽"
+                android:textColor="#E8EDF7"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/widget_row1_change"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="+1.42% • TV ↗"
+                android:textColor="#00E676"
+                android:textSize="10sp" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/widget_row_2"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="6dp"
+        android:background="@drawable/bg_widget_card_row"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingLeft="10dp"
+        android:paddingTop="7dp"
+        android:paddingRight="10dp"
+        android:paddingBottom="7dp">
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/widget_row2_title"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="🟢 LKOH • LONG (85%)"
+                android:textColor="#00E676"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/widget_row2_levels"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Вх 7120 • TP1 7215 • TP2 7310 • SL 7025"
+                android:textColor="#9598A1"
+                android:textSize="10sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:gravity="end"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/widget_row2_price"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="7120.0 ₽"
+                android:textColor="#E8EDF7"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/widget_row2_change"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="+1.18% • TV ↗"
+                android:textColor="#00E676"
+                android:textSize="10sp" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/widget_row_3"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@drawable/bg_widget_card_row"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingLeft="10dp"
+        android:paddingTop="7dp"
+        android:paddingRight="10dp"
+        android:paddingBottom="7dp">
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/widget_row3_title"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="🔴 GAZP • SHORT (81%)"
+                android:textColor="#FF5252"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/widget_row3_levels"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Вх 134.2 • TP1 131.8 • TP2 129.4 • SL 136.6"
+                android:textColor="#9598A1"
+                android:textSize="10sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:gravity="end"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/widget_row3_price"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="134.20 ₽"
+                android:textColor="#E8EDF7"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/widget_row3_change"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="-1.05% • TV ↗"
+                android:textColor="#FF5252"
+                android:textSize="10sp" />
+        </LinearLayout>
+    </LinearLayout>
+
+</LinearLayout>

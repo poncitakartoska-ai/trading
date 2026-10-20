@@ -707,7 +707,7 @@ fun AiQuantChatScreen(
                     focusedContainerColor = palette.surface,
                     unfocusedContainerColor = palette.surface
                 ),
-                shape = RoundedCornerShape(12.dp)
+                shape = RoundedCornerShape(24.dp)
             )
             Spacer(modifier = Modifier.width(8.dp))
             Button(
@@ -722,12 +722,12 @@ fun AiQuantChatScreen(
                 modifier = Modifier
                     .height(52.dp)
                     .testTag("ai_chat_send_button"),
-                shape = RoundedCornerShape(12.dp),
+                shape = RoundedCornerShape(50),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = palette.longColor,
                     contentColor = palette.bg
                 ),
-                contentPadding = PaddingValues(horizontal = 14.dp)
+                contentPadding = PaddingValues(horizontal = 16.dp)
             ) {
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.Send,
@@ -758,10 +758,10 @@ private fun ChatBubbleItem(
         Card(
             modifier = Modifier.widthIn(max = 350.dp),
             shape = RoundedCornerShape(
-                topStart = 14.dp,
-                topEnd = 14.dp,
-                bottomStart = if (isUser) 14.dp else 4.dp,
-                bottomEnd = if (isUser) 4.dp else 14.dp
+                topStart = 18.dp,
+                topEnd = 18.dp,
+                bottomStart = if (isUser) 18.dp else 4.dp,
+                bottomEnd = if (isUser) 4.dp else 18.dp
             ),
             colors = CardDefaults.cardColors(
                 containerColor = if (isUser) palette.longDim else palette.surface
@@ -778,7 +778,7 @@ private fun ChatBubbleItem(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = if (isUser) "ВЫ • ТРЕЙДЕР" else "🤖 $modeLabel",
+                        text = if (isUser) "ВЫ • ТРЕЙДЕР" else "AI QUANT • $modeLabel",
                         color = if (isUser) palette.longColor else palette.cyan,
                         fontFamily = JetBrainsMonoFontFamily,
                         fontWeight = FontWeight.Bold,

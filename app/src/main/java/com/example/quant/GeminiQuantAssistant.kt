@@ -231,7 +231,7 @@ object GeminiQuantAssistant {
             if (upper.contains(meta.ticker) || upper.contains(meta.nameRu.uppercase(Locale.getDefault()))) {
                 matched.add(
                     GroundingSource(
-                        title = "📈 График TradingView: MOEX:${meta.ticker} (${meta.nameRu})",
+                        title = "График TradingView: MOEX:${meta.ticker} (${meta.nameRu})",
                         uri = QuantSignalEngine.tradingViewUrl(meta.ticker),
                         kind = "TRADINGVIEW"
                     )
@@ -245,7 +245,7 @@ object GeminiQuantAssistant {
                 .forEach { s ->
                     matched.add(
                         GroundingSource(
-                            title = "📈 График TradingView: MOEX:${s.ticker} (${s.direction.badgeText})",
+                            title = "График TradingView: MOEX:${s.ticker} (${s.direction.badgeText})",
                             uri = s.tradingViewUrl,
                             kind = "TRADINGVIEW"
                         )

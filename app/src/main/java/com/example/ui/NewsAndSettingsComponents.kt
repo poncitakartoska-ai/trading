@@ -8,6 +8,7 @@ import android.net.Uri
 import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.ui.graphics.Color
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -70,7 +71,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.AppSettings
 import com.example.data.AppThemeMode
+import com.example.data.MarketAssetClass
 import com.example.data.QuantStrategyProfile
+import com.example.data.Strategy
 import com.example.quant.MarketNewsItem
 import com.example.quant.NewsSentimentType
 import com.example.quant.QuantSignalEngine
@@ -545,23 +548,29 @@ fun SettingsAndPcScreen(
     onToggleStrictVwapMacd: (Boolean) -> Unit,
     onSelectPollIntervalSec: (Int) -> Unit,
     onRecalculateBacktest: () -> Unit,
+    onToggleVoiceAssistant: (Boolean) -> Unit = {},
+    onToggleEcoBatteryMode: (Boolean) -> Unit = {},
+    onToggleSilentMeetingMode: (Boolean) -> Unit = {},
+    onToggleCompactCards: (Boolean) -> Unit = {},
+    onTogglePrivacyHideBalance: (Boolean) -> Unit = {},
+    onSelectMarketAssetClass: (MarketAssetClass) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val palette = LocalAppPalette.current
     val context = LocalContext.current
+    val activeStrategy: Strategy = settings.activeStrategy
 
     LazyColumn(
         modifier = modifier
             .fillMaxSize()
             .background(palette.bg)
             .testTag("settings_screen_list"),
-        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // 1. Theme & Visual Style Card
         item {
             Card(
-                shape = RoundedCornerShape(16.dp),
+                shape = RoundedCornerShape(18.dp),
                 colors = CardDefaults.cardColors(containerColor = palette.surface),
                 border = BorderStroke(1.dp, palette.border),
                 modifier = Modifier.fillMaxWidth()
@@ -569,22 +578,22 @@ fun SettingsAndPcScreen(
                 Column(modifier = Modifier.padding(16.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(
-                            imageVector = Icons.Default.SettingsBrightness,
+                            imageVector = Icons.Default.Tune,
                             contentDescription = null,
-                            tint = palette.cyan,
+                            tint = Color.White,
                             modifier = Modifier.size(20.dp)
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Column {
                             Text(
-                                text = "ТЕМА ОФОРМЛЕНИЯ И СТИЛЬ",
+                                text = "РЕЖИМ РЫНКА И МОДЕЛЬ СТРАТЕГИИ",
                                 color = palette.textPrimary,
                                 fontFamily = JetBrainsMonoFontFamily,
                                 fontWeight = FontWeight.ExtraBold,
                                 fontSize = 13.sp
                             )
                             Text(
-                                text = "Адаптивная палитра Alpine Daylight и Soft Obsidian",
+                                text = "Авто-калибровка индикаторов EMA, RSI, VWAP и ATR под акции РФ или крипторынок 24/7",
                                 color = palette.textSecondary,
                                 fontSize = 11.sp
                             )
@@ -597,87 +606,115 @@ fun SettingsAndPcScreen(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        AppThemeMode.entries.forEach { mode ->
-                            val selected = settings.themeMode == mode
-                            val icon = when (mode) {
-                                AppThemeMode.LIGHT -> Icons.Default.LightMode
-                                AppThemeMode.DARK -> Icons.Default.DarkMode
-                                AppThemeMode.SYSTEM -> Icons.Default.SettingsBrightness
-                            }
-                            Surface(
+                        MarketAssetClass.entries.forEach { assetClass ->
+                            val selected = settings.marketAssetClass == assetClass
+                            FilterChip(
+                                selected = selected,
+                                onClick = { onSelectMarketAssetClass(assetClass) },
                                 modifier = Modifier
                                     .weight(1f)
-                                    .clickable { onSelectTheme(mode) }
-                                    .testTag("theme_mode_${mode.code.lowercase()}"),
-                                color = if (selected) palette.longDim else palette.surfaceElevated,
-                                shape = RoundedCornerShape(12.dp),
-                                border = BorderStroke(
-                                    width = if (selected) 1.5.dp else 1.dp,
-                                    color = if (selected) palette.longColor else palette.border
-                                )
-                            ) {
-                                Column(
-                                    modifier = Modifier.padding(vertical = 10.dp, horizontal = 8.dp),
-                                    horizontalAlignment = Alignment.CenterHorizontally
-                                ) {
-                                    Icon(
-                                        imageVector = icon,
-                                        contentDescription = null,
-                                        tint = if (selected) palette.longColor else palette.textSecondary,
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                    Spacer(modifier = Modifier.height(4.dp))
+                                    .testTag("settings_market_mode_${assetClass.code}"),
+                                label = {
                                     Text(
-                                        text = mode.titleRu,
-                                        color = if (selected) palette.longColor else palette.textPrimary,
-                                        fontWeight = if (selected) FontWeight.ExtraBold else FontWeight.Medium,
+                                        text = if (assetClass == MarketAssetClass.CRYPTO) "₿ Криптовалюта 24/7" else "🏛 Акции РФ (MOEX)",
                                         fontSize = 11.sp,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
+                                        fontWeight = if (selected) FontWeight.ExtraBold else FontWeight.Medium
                                     )
-                                }
-                            }
+                                },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = Color.White,
+                                    selectedLabelColor = Color.Black,
+                                    containerColor = palette.bg,
+                                    labelColor = palette.textSecondary
+                                )
+                            )
                         }
                     }
-                }
-            }
-        }
 
-        // 2. Quant 2.0 Multi-Factor Strategy Profile Card
-        item {
-            Card(
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = palette.surface),
-                border = BorderStroke(1.dp, palette.longColor.copy(alpha = 0.45f)),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Default.Tune,
-                            contentDescription = null,
-                            tint = palette.longColor,
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Column {
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = palette.bg,
+                        border = BorderStroke(1.dp, palette.border),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
                             Text(
-                                text = "ДВИЖОК QUANT 2.0 (7 ФАКТОРОВ + НОВОСТИ)",
-                                color = palette.textPrimary,
+                                text = "Активная модель Strategy: ${activeStrategy.nameRu}",
+                                color = Color.White,
                                 fontFamily = JetBrainsMonoFontFamily,
                                 fontWeight = FontWeight.ExtraBold,
-                                fontSize = 13.sp
-                            )
-                            Text(
-                                text = "EMA 20/50 • VWAP • MACD • RSI • Bollinger %B • ADX • Новости",
-                                color = palette.longColor,
                                 fontSize = 11.sp
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = activeStrategy.subtitleRu,
+                                color = palette.textSecondary,
+                                fontSize = 10.sp
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = "EMA ${activeStrategy.fastEmaPeriod}/${activeStrategy.slowEmaPeriod} • RSI(${activeStrategy.rsiPeriod}) [${activeStrategy.rsiOversold.toInt()}..${activeStrategy.rsiOverbought.toInt()}] • VWAP(${activeStrategy.vwapWindowBars}) • ATR(${activeStrategy.atrPeriod}) • TP1=${activeStrategy.tp1AtrMultiplier} ATR → Безубыток • SL=${activeStrategy.slAtrMultiplier} ATR",
+                                color = Color.White,
+                                fontFamily = JetBrainsMonoFontFamily,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 10.sp
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    // Timeframe selector (10m vs 60m vs 1D)
+                    Text(
+                        text = "Таймфрейм свечей:",
+                        color = palette.textSecondary,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        listOf(
+                            10 to "10М (Внутри дня)",
+                            60 to "1Ч (Свинг)",
+                            1440 to "1Д (Дневной)"
+                        ).forEach { (interval, title) ->
+                            val selected = settings.candleIntervalMinutes == interval
+                            FilterChip(
+                                selected = selected,
+                                onClick = { onSelectCandleInterval(interval) },
+                                modifier = Modifier.weight(1f),
+                                label = {
+                                    Text(
+                                        text = title,
+                                        fontSize = 11.sp,
+                                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
+                                    )
+                                },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = Color.White,
+                                    selectedLabelColor = Color.Black,
+                                    containerColor = palette.surfaceElevated,
+                                    labelColor = palette.textSecondary
+                                )
                             )
                         }
                     }
 
                     Spacer(modifier = Modifier.height(12.dp))
 
+                    // Strategy Profile
+                    Text(
+                        text = "Режим фильтрации сигналов:",
+                        color = palette.textSecondary,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
                     QuantStrategyProfile.entries.forEach { profile ->
                         val selected = settings.strategyProfile == profile
                         Surface(
@@ -690,7 +727,7 @@ fun SettingsAndPcScreen(
                             shape = RoundedCornerShape(12.dp),
                             border = BorderStroke(
                                 width = if (selected) 1.5.dp else 1.dp,
-                                color = if (selected) palette.longColor else palette.border
+                                color = if (selected) Color.White else palette.border
                             )
                         ) {
                             Row(
@@ -700,7 +737,7 @@ fun SettingsAndPcScreen(
                                 Icon(
                                     imageVector = Icons.Default.CheckCircle,
                                     contentDescription = null,
-                                    tint = if (selected) palette.longColor else palette.textMuted,
+                                    tint = if (selected) Color.White else palette.textMuted,
                                     modifier = Modifier.size(18.dp)
                                 )
                                 Spacer(modifier = Modifier.width(10.dp))
@@ -721,49 +758,7 @@ fun SettingsAndPcScreen(
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(10.dp))
-                    HorizontalDivider(color = palette.border)
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    // Timeframe selector (10m vs 60m)
-                    Text(
-                        text = "Таймфрейм свечей анализа MOEX ISS:",
-                        color = palette.textSecondary,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        listOf(
-                            10 to "10 минут (Интрадей)",
-                            60 to "1 час (Свинг — выше точность)"
-                        ).forEach { (interval, title) ->
-                            val selected = settings.candleIntervalMinutes == interval
-                            FilterChip(
-                                selected = selected,
-                                onClick = { onSelectCandleInterval(interval) },
-                                modifier = Modifier.weight(1f),
-                                label = {
-                                    Text(
-                                        text = title,
-                                        fontSize = 11.sp,
-                                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
-                                    )
-                                },
-                                colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = palette.cyanDim,
-                                    selectedLabelColor = palette.cyan,
-                                    containerColor = palette.surfaceElevated,
-                                    labelColor = palette.textSecondary
-                                )
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(10.dp))
+                    Spacer(modifier = Modifier.height(12.dp))
 
                     // Minimum Confidence Slider
                     Row(
@@ -771,13 +766,13 @@ fun SettingsAndPcScreen(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text(
-                            text = "Мин. порог уверенности для входа:",
+                            text = "Минимальная уверенность сигнала:",
                             color = palette.textSecondary,
                             fontSize = 12.sp
                         )
                         Text(
                             text = "${settings.minConfidenceThreshold}%",
-                            color = palette.longColor,
+                            color = Color.White,
                             fontFamily = JetBrainsMonoFontFamily,
                             fontWeight = FontWeight.ExtraBold,
                             fontSize = 13.sp
@@ -789,13 +784,15 @@ fun SettingsAndPcScreen(
                         valueRange = 60f..90f,
                         steps = 5,
                         colors = SliderDefaults.colors(
-                            thumbColor = palette.longColor,
-                            activeTrackColor = palette.longColor,
+                            thumbColor = Color.White,
+                            activeTrackColor = Color.White,
                             inactiveTrackColor = palette.border
                         )
                     )
 
-                    // News Sentiment Guard Toggle
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // Compact Cards Toggle
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -803,30 +800,30 @@ fun SettingsAndPcScreen(
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = "Новостной фильтр (News Sentiment Guard)",
+                                text = "Компактный вид списка",
                                 color = palette.textPrimary,
                                 fontWeight = FontWeight.SemiBold,
                                 fontSize = 12.sp
                             )
                             Text(
-                                text = "Блокировать LONG при резком негативе в новостях и SHORT при позитиве",
+                                text = "Показывать больше тикеров на одном экране",
                                 color = palette.textSecondary,
                                 fontSize = 11.sp
                             )
                         }
                         Switch(
-                            checked = settings.useNewsSentimentFilter,
-                            onCheckedChange = onToggleNewsConfirmation,
+                            checked = settings.compactCards,
+                            onCheckedChange = onToggleCompactCards,
                             colors = SwitchDefaults.colors(
-                                checkedThumbColor = palette.bg,
-                                checkedTrackColor = palette.longColor
+                                checkedThumbColor = Color.Black,
+                                checkedTrackColor = Color.White
                             )
                         )
                     }
 
                     Spacer(modifier = Modifier.height(8.dp))
 
-                    // Strict VWAP + MACD Toggle
+                    // Privacy Balance Mode Toggle
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -834,31 +831,31 @@ fun SettingsAndPcScreen(
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = "Институциональный фильтр VWAP + MACD",
+                                text = "Скрывать баланс на демо-счете",
                                 color = palette.textPrimary,
                                 fontWeight = FontWeight.SemiBold,
                                 fontSize = 12.sp
                             )
                             Text(
-                                text = "Требовать подтверждение цены относительно VWAP и импульса MACD",
+                                text = "Маскировать сумму капитала символами •••• ₽",
                                 color = palette.textSecondary,
                                 fontSize = 11.sp
                             )
                         }
                         Switch(
-                            checked = settings.useStrictVwapMacdFilter,
-                            onCheckedChange = onToggleStrictVwapMacd,
+                            checked = settings.privacyHideBalance,
+                            onCheckedChange = onTogglePrivacyHideBalance,
                             colors = SwitchDefaults.colors(
-                                checkedThumbColor = palette.bg,
-                                checkedTrackColor = palette.longColor
+                                checkedThumbColor = Color.Black,
+                                checkedTrackColor = Color.White
                             )
                         )
                     }
 
-                    Spacer(modifier = Modifier.height(8.dp))
+                    Spacer(modifier = Modifier.height(10.dp))
 
                     Text(
-                        text = "Частота опроса MOEX ISS API:",
+                        text = "Частота обновления котировок:",
                         color = palette.textSecondary,
                         fontSize = 12.sp
                     )
@@ -872,6 +869,7 @@ fun SettingsAndPcScreen(
                             FilterChip(
                                 selected = selected,
                                 onClick = { onSelectPollIntervalSec(sec) },
+                                shape = RoundedCornerShape(50),
                                 label = {
                                     Text(
                                         text = "$sec сек",
@@ -880,188 +878,11 @@ fun SettingsAndPcScreen(
                                     )
                                 },
                                 colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = palette.cyanDim,
-                                    selectedLabelColor = palette.cyan,
+                                    selectedContainerColor = Color.White,
+                                    selectedLabelColor = Color.Black,
                                     containerColor = palette.surfaceElevated,
                                     labelColor = palette.textSecondary
                                 )
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    Button(
-                        onClick = onRecalculateBacktest,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(44.dp)
-                            .testTag("recalculate_quant_history_button"),
-                        shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = palette.longColor,
-                            contentColor = palette.bg
-                        )
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Refresh,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = "Пересчитать историю по профилю Quant 2.0",
-                            fontWeight = FontWeight.ExtraBold,
-                            fontSize = 12.sp
-                        )
-                    }
-                }
-            }
-        }
-
-        // 3. Standalone Windows PC (.exe) Version Info Card
-        item {
-            Card(
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = palette.surface),
-                border = BorderStroke(1.5.dp, palette.cyan.copy(alpha = 0.6f)),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            modifier = Modifier
-                                .size(40.dp)
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(palette.cyanDim)
-                                .border(1.dp, palette.cyan, RoundedCornerShape(10.dp)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Computer,
-                                contentDescription = null,
-                                tint = palette.cyan,
-                                modifier = Modifier.size(22.dp)
-                            )
-                        }
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Column {
-                            Text(
-                                text = "ОТДЕЛЬНАЯ ВЕРСИЯ ДЛЯ ПК (WINDOWS .EXE)",
-                                color = palette.textPrimary,
-                                fontFamily = JetBrainsMonoFontFamily,
-                                fontWeight = FontWeight.ExtraBold,
-                                fontSize = 13.sp
-                            )
-                            Text(
-                                text = "Десктопный терминал MOEX_Pulse_AI_Desktop.exe готов в проекте",
-                                color = palette.cyan,
-                                fontSize = 11.sp
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    Surface(
-                        color = palette.surfaceElevated,
-                        shape = RoundedCornerShape(12.dp),
-                        border = BorderStroke(1.dp, palette.border),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(12.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Text(
-                                text = "1. Автосборка в GitHub Actions (.apk + .exe):",
-                                color = palette.textPrimary,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 12.sp
-                            )
-                            Text(
-                                text = "При отправке проекта в GitHub воркфлоу `.github/workflows/build_apk.yml` автоматически собирает сразу два готовых файла в разделе Actions → Artifacts:\n" +
-                                    "• `MOEX-Pulse-AI-Android-APK` (.apk для телефона)\n" +
-                                    "• `MOEX-Pulse-AI-Windows-Desktop-EXE` (`MOEX_Pulse_AI_Desktop.exe` для ПК)",
-                                color = palette.textSecondary,
-                                fontSize = 11.sp
-                            )
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = "2. Локальный запуск или сборка .exe на ПК:",
-                                color = palette.textPrimary,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 12.sp
-                            )
-                            Text(
-                                text = "В папке `desktop_pc_app/` находится полный код десктопной версии (`moex_pulse_pc.py`) и скрипт `build_exe.bat` (собирает автономный `.exe` в один клик через PyInstaller).",
-                                color = palette.textSecondary,
-                                fontSize = 11.sp
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        OutlinedButton(
-                            onClick = {
-                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                val cmd = "cd desktop_pc_app && build_exe.bat"
-                                clipboard.setPrimaryClip(ClipData.newPlainText("PC Build Command", cmd))
-                                Toast.makeText(context, "Команда сборки .exe скопирована", Toast.LENGTH_SHORT).show()
-                            },
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(10.dp),
-                            border = BorderStroke(1.dp, palette.cyan)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.ContentCopy,
-                                contentDescription = null,
-                                tint = palette.cyan,
-                                modifier = Modifier.size(14.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = "Команда .exe",
-                                color = palette.cyan,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-
-                        Button(
-                            onClick = {
-                                try {
-                                    context.startActivity(
-                                        Intent(
-                                            Intent.ACTION_VIEW,
-                                            Uri.parse("https://ru.tradingview.com/chart/?symbol=MOEX:IMOEX")
-                                        )
-                                    )
-                                } catch (_: Exception) {
-                                }
-                            },
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(10.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = palette.cyan,
-                                contentColor = palette.bg
-                            )
-                        ) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.OpenInNew,
-                                contentDescription = null,
-                                modifier = Modifier.size(14.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = "Индекс IMOEX ↗",
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold
                             )
                         }
                     }

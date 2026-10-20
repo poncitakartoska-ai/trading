@@ -1,8 +1,9 @@
 <resources>
-    <string name="app_name">Moex Pulse</string>
-    <string name="terminal_subtitle">MOEX TQBR • LIVE ОБНОВЛЕНИЕ</string>
-    <string name="notification_channel_name">Торговые сигналы MOEX</string>
+    <string name="app_name">Kvant</string>
+    <string name="terminal_subtitle">KVANT MONOCHROME • MOEX TQBR LIVE</string>
+    <string name="notification_channel_name">Kvant • Торговые сигналы MOEX</string>
     <string name="notification_channel_desc">Уведомления о новых сигналах LONG и SHORT на Мосбирже</string>
-    <string name="service_notification_title">MOEX Pulse • Фоновый радар активен</string>
+    <string name="service_notification_title">Kvant • Фоновый радар активен</string>
     <string name="service_notification_text">Мониторинг котировок TQBR каждые 10 сек</string>
+    <string name="widget_description">Kvant Monochrome • Виджет котировок и сигналов Мосбиржи в черно-белом стиле</string>
 </resources>

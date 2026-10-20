@@ -13,15 +13,16 @@
                 android:endX="108"
                 android:endY="108"
                 android:type="linear">
-                <item android:offset="0.0" android:color="#FF0B0E14" />
-                <item android:offset="0.5" android:color="#FF131B2E" />
-                <item android:offset="1.0" android:color="#FF092218" />
+                <item android:offset="0.0" android:color="#FF000000" />
+                <item android:offset="0.55" android:color="#FF0D0D0D" />
+                <item android:offset="1.0" android:color="#FF1A1A1A" />
             </gradient>
         </aapt:attr>
     </path>
+    <!-- Architectural Monochrome Grid Hairlines -->
     <path
-        android:fillColor="#1400E676"
+        android:fillColor="#00000000"
         android:pathData="M0,36L108,36M0,54L108,54M0,72L108,72M36,0L36,108M54,0L54,108M72,0L72,108"
-        android:strokeWidth="0.8"
-        android:strokeColor="#1F00E676" />
+        android:strokeWidth="0.6"
+        android:strokeColor="#22FFFFFF" />
 </vector>

@@ -1,6 +1,7 @@
 package com.example.ui
 
 import android.app.Application
+import android.widget.Toast
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.AppDatabase
@@ -9,537 +10,1168 @@ import com.example.data.AppSettingsManager
 import com.example.data.AppThemeMode
 import com.example.data.ChatMessageCloud
 import com.example.data.CloudSignalAndChatRepository
+import com.example.data.MarketAssetClass
+import com.example.data.PaperPortfolioSummary
+import com.example.data.PaperTradeEntity
+import com.example.data.PaperTradingRepository
+import com.example.data.PerformanceSummary
 import com.example.data.QuantStrategyProfile
 import com.example.data.SignalHistoryEntity
+import com.example.data.SignalHistoryRepository
+import com.example.data.SignalSortOrder
 import com.example.quant.AiAssistantMode
 import com.example.quant.AiTurn
 import com.example.quant.GeminiQuantAssistant
+import com.example.quant.ImoexIndexSnapshot
 import com.example.quant.MarketNewsItem
+import com.example.quant.MarketNewsOverview
+import com.example.quant.MarketSessionStatus
 import com.example.quant.MoexIssClient
 import com.example.quant.MoexNewsEngine
 import com.example.quant.QuantSignal
 import com.example.quant.QuantSignalEngine
 import com.example.quant.SignalDirection
 import com.example.service.SignalMonitorService
+import com.example.service.TraderVoiceAndShareHelper
+import com.example.widget.MoexPulseWidgetProvider
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.FirebaseUser
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
-import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
-import java.util.Date
 import java.util.Locale
+import kotlin.math.abs
+import kotlin.math.floor
+import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.roundToLong
 
-enum class SignalFilter(val title: String) {
-    ALL("Все (15)"),
-    ACTIVE("Активные"),
-    LONG("LONG"),
-    SHORT("SHORT"),
-    WAIT("WAIT")
+sealed class PulseUiState {
+    data object Loading : PulseUiState()
+    data class Success(
+        val signals: List<QuantSignal>,
+        val lastPollTime: String,
+        val isMarketLive: Boolean
+    ) : PulseUiState()
+    data class Error(
+        val message: String,
+        val cachedSignals: List<QuantSignal>
+    ) : PulseUiState()
 }
-
-enum class TerminalTab(val title: String) {
-    LIVE_SIGNALS("Сигналы"),
-    NEWS_FEED("Новости"),
-    HISTORY("История"),
-    AI_CHAT("AI Чат"),
-    SETTINGS_PC("Настройки")
-}
-
-data class PulseUiState(
-    val isLoading: Boolean = true,
-    val isRefreshing: Boolean = false,
-    val signals: List<QuantSignal> = emptyList(),
-    val newsItems: List<MarketNewsItem> = emptyList(),
-    val isNewsLoading: Boolean = false,
-    val selectedNewsTickerFilter: String? = null,
-    val marketSentimentIndex: Int = 0,
-    val marketRegimeLabel: String = "Анализ новостного фона...",
-    val selectedFilter: SignalFilter = SignalFilter.ALL,
-    val selectedTab: TerminalTab = TerminalTab.LIVE_SIGNALS,
-    val selectedSignal: QuantSignal? = null,
-    val historyFilterTicker: String? = null,
-    val updatedTime: String = "--:--:--",
-    val isLiveConnection: Boolean = true,
-    val errorMessage: String? = null,
-    val nextRefreshInSec: Int = 10,
-    val depositText: String = "150000",
-    val riskPercentText: String = "1.0",
-    val isAuthenticated: Boolean = false,
-    val currentUserUid: String? = null,
-    val currentUserEmail: String? = null,
-    val selectedAiMode: AiAssistantMode = AiAssistantMode.PRO_ARGON,
-    val isAiSending: Boolean = false,
-    val cloudSyncError: String? = null
-)
 
 class PulseViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val database = AppDatabase.getInstance(application)
-    private val historyDao = database.signalHistoryDao()
-    private val cloudRepository = CloudSignalAndChatRepository(application)
-    private val issClient = MoexIssClient()
-
-    private val _uiState = MutableStateFlow(PulseUiState())
-    val uiState: StateFlow<PulseUiState> = _uiState.asStateFlow()
-
-    val appSettings: StateFlow<AppSettings> = AppSettingsManager.settings
-
-    val signalHistory: StateFlow<List<SignalHistoryEntity>> = historyDao.getAllHistoryFlow()
-        .stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.WhileSubscribed(5000),
-            initialValue = emptyList()
-        )
-
-    private val _cloudChatMessages = MutableStateFlow<List<ChatMessageCloud>>(emptyList())
-    val cloudChatMessages: StateFlow<List<ChatMessageCloud>> = _cloudChatMessages.asStateFlow()
-
-    private var pollingJob: Job? = null
-    private var cloudSignalsJob: Job? = null
-    private var cloudChatJob: Job? = null
-    private var hasBackfilledHistory = false
-
-    private val authStateListener = FirebaseAuth.AuthStateListener { auth ->
-        val user = auth.currentUser
-        _uiState.update {
-            it.copy(
-                isAuthenticated = user != null,
-                currentUserUid = user?.uid,
-                currentUserEmail = user?.email ?: user?.displayName
-            )
-        }
-        if (user != null) {
-            startCloudObservers(user.uid)
-        } else {
-            stopCloudObservers()
-        }
+    private val appContext = application.applicationContext
+    private val moexClient = MoexIssClient()
+    private val db = AppDatabase.getInstance(appContext)
+    private val repository = SignalHistoryRepository(db.signalHistoryDao())
+    private val paperRepository = PaperTradingRepository(db.paperTradeDao())
+    private val cloudRepo: CloudSignalAndChatRepository? by lazy {
+        runCatching { CloudSignalAndChatRepository(appContext) }.getOrNull()
     }
 
     init {
-        AppSettingsManager.ensureInitialized(application)
-        FirebaseAuth.getInstance().addAuthStateListener(authStateListener)
-        val currentUser = FirebaseAuth.getInstance().currentUser
-        if (currentUser != null) {
-            _uiState.update {
-                it.copy(
-                    isAuthenticated = true,
-                    currentUserUid = currentUser.uid,
-                    currentUserEmail = currentUser.email ?: currentUser.displayName
+        AppSettingsManager.ensureInitialized(appContext)
+        TraderVoiceAndShareHelper.ensureTtsInitialized(appContext)
+    }
+
+    val appSettings: StateFlow<AppSettings> = AppSettingsManager.settings
+
+    private val _uiState = MutableStateFlow<PulseUiState>(PulseUiState.Loading)
+    val uiState: StateFlow<PulseUiState> = _uiState.asStateFlow()
+
+    private val _imoexSnapshot = MutableStateFlow(ImoexIndexSnapshot())
+    val imoexSnapshot: StateFlow<ImoexIndexSnapshot> = _imoexSnapshot.asStateFlow()
+
+    private val _sessionStatus = MutableStateFlow(
+        QuantSignalEngine.getMoscowSessionStatus(
+            candleIntervalMinutes = appSettings.value.candleIntervalMinutes,
+            isCrypto = appSettings.value.marketAssetClass == MarketAssetClass.CRYPTO
+        )
+    )
+    val sessionStatus: StateFlow<MarketSessionStatus> = _sessionStatus.asStateFlow()
+
+    private val _selectedFilter = MutableStateFlow<SignalDirection?>(null)
+    val selectedFilter: StateFlow<SignalDirection?> = _selectedFilter.asStateFlow()
+
+    private val _searchQuery = MutableStateFlow("")
+    val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
+
+    private val _onlyWatchlistFavorites = MutableStateFlow(false)
+    val onlyWatchlistFavorites: StateFlow<Boolean> = _onlyWatchlistFavorites.asStateFlow()
+
+    private val _selectedRiskTicker = MutableStateFlow<String?>(null)
+    val selectedRiskTicker: StateFlow<String?> = _selectedRiskTicker.asStateFlow()
+
+    private val _activeScreenTab = MutableStateFlow("LIVE_SIGNALS")
+    val activeScreenTab: StateFlow<String> = _activeScreenTab.asStateFlow()
+
+    private val _historyTickerFilter = MutableStateFlow<String?>(null)
+    val historyTickerFilter: StateFlow<String?> = _historyTickerFilter.asStateFlow()
+
+    private val _newsFilterTicker = MutableStateFlow<String?>(null)
+    val newsFilterTicker: StateFlow<String?> = _newsFilterTicker.asStateFlow()
+
+    private val _newsOverview = MutableStateFlow(
+        MarketNewsOverview(
+            marketSentimentIndex = 12,
+            marketRegimeLabel = "Умеренно-бычий фон РФ",
+            bullishCount = 0,
+            bearishCount = 0,
+            neutralCount = 0,
+            items = emptyList(),
+            tickerIntelligence = emptyMap()
+        )
+    )
+    val newsOverview: StateFlow<MarketNewsOverview> = _newsOverview.asStateFlow()
+
+    private val _isRefreshingNews = MutableStateFlow(false)
+    val isRefreshingNews: StateFlow<Boolean> = _isRefreshingNews.asStateFlow()
+
+    val isBackgroundServiceRunning: StateFlow<Boolean> = SignalMonitorService.isServiceRunning
+
+    private val _currentUser = MutableStateFlow<FirebaseUser?>(
+        runCatching { FirebaseAuth.getInstance().currentUser }.getOrNull()
+    )
+    val currentUser: StateFlow<FirebaseUser?> = _currentUser.asStateFlow()
+
+    private val _selectedAiMode = MutableStateFlow(AiAssistantMode.PRO_ARGON)
+    val selectedAiMode: StateFlow<AiAssistantMode> = _selectedAiMode.asStateFlow()
+
+    private val _chatMessages = MutableStateFlow<List<ChatMessageCloud>>(emptyList())
+    val chatMessages: StateFlow<List<ChatMessageCloud>> = _chatMessages.asStateFlow()
+
+    private val _isAiThinking = MutableStateFlow(false)
+    val isAiThinking: StateFlow<Boolean> = _isAiThinking.asStateFlow()
+
+    val allSignalHistory: StateFlow<List<SignalHistoryEntity>> = repository.allHistory
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val performanceSummary: StateFlow<PerformanceSummary> = allSignalHistory
+        .map { SignalHistoryRepository.computeSummary(it) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), PerformanceSummary())
+
+    // Module 7: Paper Trading flows
+    val allPaperTrades: StateFlow<List<PaperTradeEntity>> = paperRepository.allTradesFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val paperPortfolioSummary: StateFlow<PaperPortfolioSummary> = allPaperTrades
+        .map { PaperTradingRepository.computePortfolioSummary(it) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), PaperPortfolioSummary())
+
+    private var cachedSignals: List<QuantSignal> = emptyList()
+    private var pollingJob: Job? = null
+    private var sessionTickerJob: Job? = null
+    private var hasSeededHistoricalSignals = false
+    private var isAppInForeground: Boolean = true
+
+    init {
+        runCatching { SignalMonitorService.startService(appContext) }
+        startRealTimePolling()
+        startSessionCountdownTicker()
+        seedDefaultAiWelcomeIfNeeded()
+        observeCloudChatIfAuthenticated()
+    }
+
+    private fun startSessionCountdownTicker() {
+        sessionTickerJob?.cancel()
+        sessionTickerJob = viewModelScope.launch {
+            while (isActive) {
+                _sessionStatus.value = QuantSignalEngine.getMoscowSessionStatus(
+                    candleIntervalMinutes = appSettings.value.candleIntervalMinutes,
+                    isCrypto = appSettings.value.marketAssetClass == MarketAssetClass.CRYPTO
                 )
-            }
-            startCloudObservers(currentUser.uid)
-        }
-        SignalMonitorService.startServiceSafely(application)
-        startContinuousPolling()
-    }
-
-    private fun startCloudObservers(uid: String) {
-        cloudSignalsJob?.cancel()
-        cloudChatJob?.cancel()
-
-        cloudSignalsJob = viewModelScope.launch {
-            try {
-                cloudRepository.observeUserSignals(uid).collect { cloudList ->
-                    val existingLocal = historyDao.getAllHistoryOnce()
-                    val existingKeys = existingLocal.map { "${it.ticker}_${it.entryPrice}" }.toSet()
-                    val missingLocally = cloudList.filter {
-                        "${it.ticker}_${it.entryPrice}" !in existingKeys
-                    }.map { cloud ->
-                        SignalHistoryEntity(
-                            ticker = cloud.ticker,
-                            stockName = cloud.stockName,
-                            signalType = cloud.signalType,
-                            entryPrice = cloud.entryPrice,
-                            takeProfit = cloud.takeProfit,
-                            stopLoss = cloud.stopLoss,
-                            confidence = cloud.confidence.toInt(),
-                            reason = cloud.reason,
-                            rsi = 50.0,
-                            atr = 1.0,
-                            timestamp = cloud.createdAt?.toDate()?.time ?: System.currentTimeMillis(),
-                            status = cloud.status,
-                            exitPrice = null,
-                            resolvedAt = cloud.updatedAt?.toDate()?.time,
-                            pnlPercent = cloud.pnlPercent
-                        )
-                    }
-                    if (missingLocally.isNotEmpty()) {
-                        historyDao.insertSignals(missingLocally)
-                    }
-                }
-            } catch (e: Exception) {
-                _uiState.update { it.copy(cloudSyncError = e.localizedMessage) }
-            }
-        }
-
-        cloudChatJob = viewModelScope.launch {
-            try {
-                cloudRepository.observeChatMessages(uid).collect { msgs ->
-                    _cloudChatMessages.value = msgs
-                }
-            } catch (e: Exception) {
-                _uiState.update { it.copy(cloudSyncError = e.localizedMessage) }
+                delay(1000L)
             }
         }
     }
 
-    private fun stopCloudObservers() {
-        cloudSignalsJob?.cancel()
-        cloudChatJob?.cancel()
-        cloudSignalsJob = null
-        cloudChatJob = null
-        _cloudChatMessages.value = emptyList()
+    /**
+     * Block 1.3: Smart Lifecycle Polling — slows network polling 3x when app is backgrounded
+     */
+    fun setAppInForeground(inForeground: Boolean) {
+        isAppInForeground = inForeground
     }
 
-    fun onAuthStateChanged() {
-        val user = FirebaseAuth.getInstance().currentUser
-        _uiState.update {
-            it.copy(
-                isAuthenticated = user != null,
-                currentUserUid = user?.uid,
-                currentUserEmail = user?.email ?: user?.displayName
+    private fun seedDefaultAiWelcomeIfNeeded() {
+        if (_chatMessages.value.isEmpty()) {
+            _chatMessages.value = listOf(
+                ChatMessageCloud(
+                    id = "welcome_ai_ultimate",
+                    userId = "local",
+                    role = "model",
+                    text = "Система **Kvant Monochrome PRO** готова к работе. Терминал оснащен **Recharts Тепловой картой успешности сигналов по временным интервалам (5M–1W & Часы сессии)**, **24-Factor Institutional Quant Engine** (экспонента Херста H, фильтр Калмана, энтропия Шеннона, волатильность GKYZ, Kyle's Lambda λ, тест Ло-МакКинли VR(q), Сортино/Калмар/Омега/Ulcer UPI, критерий Келли, VPIN токсичность потока, конус Монте-Карло 90% CI), фильтром поводыря **IMOEX**, двойным тейком (**TP1 + TP2 + Безубыток + ATR Trailing Stop**) и **Демо-счетом с комиссией 0%**.\n\nВыберите быстрый запрос ниже или введите любой из 20 тикеров РФ (`SBER`, `LKOH`, `GAZP`, `YDEX`, `T`, `PLZL`, `POSI`), чтобы получить институциональный квант-отчет с прямой ссылкой на график **TradingView**.",
+                    modelMode = AiAssistantMode.PRO_ARGON.code,
+                    sourcesSummary = "График TradingView: MOEX:IMOEX|https://ru.tradingview.com/chart/?symbol=MOEX:IMOEX"
+                )
             )
         }
-        if (user != null) {
-            startCloudObservers(user.uid)
-        } else {
-            stopCloudObservers()
+    }
+
+    private fun observeCloudChatIfAuthenticated() {
+        val uid = runCatching { FirebaseAuth.getInstance().currentUser?.uid }.getOrNull() ?: return
+        viewModelScope.launch {
+            try {
+                cloudRepo?.observeChatMessages(uid)?.collect { list ->
+                    if (list.isNotEmpty()) {
+                        _chatMessages.value = list
+                    }
+                }
+            } catch (_: Exception) {
+            }
         }
     }
 
-    private fun startContinuousPolling() {
-        pollingJob?.cancel()
-        pollingJob = viewModelScope.launch {
-            while (isActive) {
-                fetchOnce(isManual = false)
-                val pollSecs = appSettings.value.pollIntervalSeconds.coerceIn(5, 60)
-                for (remaining in pollSecs downTo 1) {
-                    _uiState.update { it.copy(nextRefreshInSec = remaining) }
-                    delay(1000L)
+    fun onAuthChanged() {
+        _currentUser.value = runCatching { FirebaseAuth.getInstance().currentUser }.getOrNull()
+        observeCloudChatIfAuthenticated()
+    }
+
+    fun signOut() {
+        runCatching { FirebaseAuth.getInstance().signOut() }
+        _currentUser.value = null
+    }
+
+    fun setAiMode(mode: AiAssistantMode) {
+        _selectedAiMode.value = mode
+    }
+
+    fun setFilter(direction: SignalDirection?) {
+        _selectedFilter.value = direction
+    }
+
+    fun setSearchQuery(query: String) {
+        _searchQuery.value = query
+    }
+
+    fun toggleWatchlistFavoritesFilter() {
+        _onlyWatchlistFavorites.value = !_onlyWatchlistFavorites.value
+    }
+
+    fun toggleFavoriteTicker(ticker: String) {
+        AppSettingsManager.toggleFavoriteTicker(appContext, ticker)
+    }
+
+    fun updateSortOrder(order: SignalSortOrder) {
+        AppSettingsManager.updateSortOrder(appContext, order)
+    }
+
+    fun selectTickerForRisk(ticker: String?) {
+        _selectedRiskTicker.value = ticker
+    }
+
+    fun setActiveScreenTab(tab: String) {
+        _activeScreenTab.value = tab
+    }
+
+    fun setHistoryTickerFilter(ticker: String?) {
+        _historyTickerFilter.value = ticker
+    }
+
+    fun setNewsFilterTicker(ticker: String?) {
+        _newsFilterTicker.value = ticker
+    }
+
+    fun openHistoryForTicker(ticker: String) {
+        _historyTickerFilter.value = ticker
+        _activeScreenTab.value = "HISTORY"
+    }
+
+    fun openNewsForTicker(ticker: String) {
+        _newsFilterTicker.value = ticker
+        _activeScreenTab.value = "NEWS_FEED"
+    }
+
+    fun updateMarketAssetClass(assetClass: MarketAssetClass) {
+        if (appSettings.value.marketAssetClass == assetClass) return
+        AppSettingsManager.updateMarketAssetClass(appContext, assetClass)
+        _selectedRiskTicker.value = null
+        _sessionStatus.value = QuantSignalEngine.getMoscowSessionStatus(
+            candleIntervalMinutes = appSettings.value.candleIntervalMinutes,
+            isCrypto = assetClass == MarketAssetClass.CRYPTO
+        )
+        hasSeededHistoricalSignals = false
+        refreshNow()
+    }
+
+    fun toggleMarketAssetClass() {
+        val next = if (appSettings.value.marketAssetClass == MarketAssetClass.MOEX) {
+            MarketAssetClass.CRYPTO
+        } else {
+            MarketAssetClass.MOEX
+        }
+        updateMarketAssetClass(next)
+    }
+
+    // Settings updates
+    fun updateThemeMode(mode: AppThemeMode) {
+        AppSettingsManager.updateThemeMode(appContext, mode)
+    }
+
+    fun toggleLightDarkQuick() {
+        AppSettingsManager.toggleLightDarkQuick(appContext)
+    }
+
+    fun updateStrategyProfile(profile: QuantStrategyProfile) {
+        AppSettingsManager.updateStrategyProfile(appContext, profile)
+        viewModelScope.launch {
+            repository.clearAll()
+            hasSeededHistoricalSignals = false
+            pollOnce()
+        }
+    }
+
+    fun updateMinConfidence(threshold: Int) {
+        AppSettingsManager.updateMinConfidence(appContext, threshold)
+        refreshNow()
+    }
+
+    fun updateCandleInterval(minutes: Int) {
+        AppSettingsManager.updateCandleInterval(appContext, minutes)
+        _sessionStatus.value = QuantSignalEngine.getMoscowSessionStatus(
+            candleIntervalMinutes = minutes,
+            isCrypto = appSettings.value.marketAssetClass == MarketAssetClass.CRYPTO
+        )
+        refreshNow()
+    }
+
+    fun updateUseNewsSentiment(enabled: Boolean) {
+        AppSettingsManager.updateUseNewsSentiment(appContext, enabled)
+        refreshNow()
+    }
+
+    fun updateUseStrictVwapMacd(enabled: Boolean) {
+        AppSettingsManager.updateUseStrictVwapMacd(appContext, enabled)
+        refreshNow()
+    }
+
+    fun updatePollIntervalSeconds(seconds: Int) {
+        AppSettingsManager.updatePollIntervalSeconds(appContext, seconds)
+    }
+
+    fun updateCompactCards(compact: Boolean) {
+        AppSettingsManager.updateCompactCards(appContext, compact)
+    }
+
+    fun updateVoiceAssistant(enabled: Boolean) {
+        AppSettingsManager.updateVoiceAssistant(appContext, enabled)
+    }
+
+    fun updateDefaultRiskRub(riskRub: Double) {
+        AppSettingsManager.updateDefaultRiskRub(appContext, riskRub)
+    }
+
+    fun updateEcoBatteryMode(enabled: Boolean) {
+        AppSettingsManager.updateEcoBatteryMode(appContext, enabled)
+    }
+
+    fun updateSilentMeetingHapticMode(enabled: Boolean) {
+        AppSettingsManager.updateSilentMeetingHapticMode(appContext, enabled)
+    }
+
+    fun updatePrivacyHideBalance(hide: Boolean) {
+        AppSettingsManager.updatePrivacyHideBalance(appContext, hide)
+    }
+
+    fun toggleBackgroundService(enable: Boolean) {
+        if (enable) {
+            SignalMonitorService.startService(appContext)
+        } else {
+            SignalMonitorService.stopService(appContext)
+        }
+    }
+
+    fun clearSignalHistory() {
+        viewModelScope.launch {
+            repository.clearAll()
+            hasSeededHistoricalSignals = false
+            if (cachedSignals.isNotEmpty()) {
+                seedHistoricalBacktestIfEmpty(cachedSignals)
+            }
+        }
+    }
+
+    fun exportJournalCsv() {
+        TraderVoiceAndShareHelper.exportJournalToCsvReport(
+            context = appContext,
+            paperTrades = allPaperTrades.value,
+            signalHistory = allSignalHistory.value
+        )
+    }
+
+    /**
+     * Module 7 + Micro-feature #39: Open a 1-click Virtual Demo Position with Daily Loss Circuit Breaker check
+     */
+    fun openPaperTradeFromSignal(signal: QuantSignal, customLots: Int? = null) {
+        viewModelScope.launch {
+            val summary = paperPortfolioSummary.value
+            if (summary.isDailyLossLimitReached) {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(
+                        appContext,
+                        "Circuit Breaker: Дневной лимит потерь (-3%) достигнут. Новые сделки заблокированы.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+                return@launch
+            }
+
+            val dir = if (signal.direction == SignalDirection.SHORT) "SHORT" else "LONG"
+            val rawRiskSetting = appSettings.value.defaultRiskRub
+            val effectiveRisk = if (signal.isCrypto) (rawRiskSetting / 50.0).coerceAtLeast(25.0) else rawRiskSetting
+            val riskPerShare = abs(signal.entryPrice - signal.initialStopLoss).coerceAtLeast(signal.minStep)
+            val riskPerLot = (riskPerShare * signal.lotSize).coerceAtLeast(signal.minStep)
+            val calcLots = customLots ?: max(1, floor(effectiveRisk / riskPerLot).toInt())
+            val curSym = signal.currencySymbol
+
+            val posVal = signal.currentPrice * signal.lotSize * calcLots
+            val newTrade = PaperTradeEntity(
+                ticker = signal.ticker,
+                stockName = signal.name,
+                direction = dir,
+                entryPrice = signal.currentPrice,
+                currentPrice = signal.currentPrice,
+                takeProfit1 = signal.takeProfit1,
+                takeProfit2 = signal.takeProfit2,
+                initialStopLoss = signal.initialStopLoss,
+                dynamicStopLoss = signal.dynamicStopLoss,
+                lots = calcLots,
+                lotSize = signal.lotSize,
+                minStep = signal.minStep,
+                atr = signal.atr14,
+                positionValueRub = posVal,
+                status = "OPEN",
+                tp1Hit = false,
+                lockedTp1ProfitRub = 0.0,
+                unrealizedPnlRub = 0.0,
+                realizedPnlRub = 0.0,
+                totalPnlRub = 0.0,
+                pnlPercent = 0.0,
+                openedAt = System.currentTimeMillis(),
+                closeNoteRu = "Активна • Ждем TP1 (${QuantSignalEngine.formatPrice(signal.takeProfit1, signal.minStep)} $curSym)"
+            )
+            paperRepository.insertTrade(newTrade)
+            TraderVoiceAndShareHelper.speakPaperTradeOpened(appContext, signal.name, dir, calcLots)
+            withContext(Dispatchers.Main) {
+                Toast.makeText(
+                    appContext,
+                    "Открыта демо-позиция $dir #${signal.ticker} ($calcLots лот. по ${QuantSignalEngine.formatPrice(signal.currentPrice, signal.minStep)} $curSym)",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+        }
+    }
+
+    /**
+     * Quick 1-Tap Batch Execution: Adds all active signals with confidence >= minConfidence (e.g. 90%+ or 94%+)
+     * directly into the Demo Portfolio with Kvant Shield Breakeven protection & 0% commission.
+     */
+    fun openBatchHighConfidencePaperTrades(minConfidence: Int) {
+        viewModelScope.launch {
+            val summary = paperPortfolioSummary.value
+            if (summary.isDailyLossLimitReached) {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(
+                        appContext,
+                        "Circuit Breaker: Дневной лимит потерь (-3%) достигнут. Новые сделки заблокированы.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+                return@launch
+            }
+
+            val currentSignals = (uiState.value as? PulseUiState.Success)?.signals ?: cachedSignals
+            val activeSignals = currentSignals.filter {
+                it.direction == SignalDirection.LONG || it.direction == SignalDirection.SHORT
+            }
+
+            // Pick all active signals >= minConfidence; if none match exact 94%+, fallback to top highest-conviction active signals (>= 88%)
+            val candidates = activeSignals.filter { it.confidence >= minConfidence }.ifEmpty {
+                activeSignals.sortedByDescending { it.confidence }.take(3)
+            }
+
+            if (candidates.isEmpty()) {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(
+                        appContext,
+                        "Сейчас нет активных сигналов LONG/SHORT для пакетного входа",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+                return@launch
+            }
+
+            val openTrades = paperRepository.getOpenTradesOnce()
+            val rawRiskSetting = appSettings.value.defaultRiskRub
+            val addedTickers = mutableListOf<String>()
+            val now = System.currentTimeMillis()
+
+            for (signal in candidates) {
+                val dir = if (signal.direction == SignalDirection.SHORT) "SHORT" else "LONG"
+                val alreadyOpen = openTrades.any { it.ticker == signal.ticker && it.direction == dir }
+                if (alreadyOpen) continue
+
+                val effectiveRisk = if (signal.isCrypto) (rawRiskSetting / 50.0).coerceAtLeast(25.0) else rawRiskSetting
+                val riskPerShare = abs(signal.entryPrice - signal.initialStopLoss).coerceAtLeast(signal.minStep)
+                val riskPerLot = (riskPerShare * signal.lotSize).coerceAtLeast(signal.minStep)
+                val calcLots = max(1, floor(effectiveRisk / riskPerLot).toInt())
+                val curSym = signal.currencySymbol
+                val posVal = signal.currentPrice * signal.lotSize * calcLots
+
+                val newTrade = PaperTradeEntity(
+                    ticker = signal.ticker,
+                    stockName = signal.name,
+                    direction = dir,
+                    entryPrice = signal.currentPrice,
+                    currentPrice = signal.currentPrice,
+                    takeProfit1 = signal.takeProfit1,
+                    takeProfit2 = signal.takeProfit2,
+                    initialStopLoss = signal.initialStopLoss,
+                    dynamicStopLoss = signal.dynamicStopLoss,
+                    lots = calcLots,
+                    lotSize = signal.lotSize,
+                    minStep = signal.minStep,
+                    atr = signal.atr14,
+                    positionValueRub = posVal,
+                    status = "OPEN",
+                    tp1Hit = false,
+                    lockedTp1ProfitRub = 0.0,
+                    unrealizedPnlRub = 0.0,
+                    realizedPnlRub = 0.0,
+                    totalPnlRub = 0.0,
+                    pnlPercent = 0.0,
+                    openedAt = now,
+                    closeNoteRu = "Пакетный вход ${minConfidence}%+ (Квант-Щит 75%+) • Ждем TP1 (${QuantSignalEngine.formatPrice(signal.takeProfit1, signal.minStep)} $curSym)"
+                )
+                paperRepository.insertTrade(newTrade)
+                addedTickers.add("#${signal.ticker} (${signal.confidence}%)")
+            }
+
+            withContext(Dispatchers.Main) {
+                if (addedTickers.isEmpty()) {
+                    Toast.makeText(
+                        appContext,
+                        "Все сигналы ${minConfidence}%+ уже открыты в вашем портфеле!",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                } else {
+                    Toast.makeText(
+                        appContext,
+                        "Добавлено в портфель (${addedTickers.size} сд. ${minConfidence}%+): ${addedTickers.joinToString(", ")}",
+                        Toast.LENGTH_LONG
+                    ).show()
                 }
             }
+        }
+    }
+
+    fun closePaperTradeManually(trade: PaperTradeEntity) {
+        viewModelScope.launch {
+            if (trade.status != "OPEN") return@launch
+            val totalShares = (trade.lots * trade.lotSize).toDouble()
+            val remainingFactor = if (trade.tp1Hit) 0.5 else 1.0
+            val priceDiff = if (trade.direction == "LONG") {
+                trade.currentPrice - trade.entryPrice
+            } else {
+                trade.entryPrice - trade.currentPrice
+            }
+            val remainingPnlRub = priceDiff * totalShares * remainingFactor
+            val finalRealized = trade.lockedTp1ProfitRub + remainingPnlRub
+            val finalPct = if (trade.positionValueRub > 0) (finalRealized / trade.positionValueRub) * 100.0 else 0.0
+
+            paperRepository.updateTrade(
+                trade.copy(
+                    status = "CLOSED_MANUAL",
+                    unrealizedPnlRub = 0.0,
+                    realizedPnlRub = finalRealized,
+                    totalPnlRub = finalRealized,
+                    pnlPercent = finalPct,
+                    closedAt = System.currentTimeMillis(),
+                    exitPrice = trade.currentPrice,
+                    closeNoteRu = "Закрыта вручную по рынку (${QuantSignalEngine.formatPrice(trade.currentPrice, trade.minStep)} ₽)"
+                )
+            )
+        }
+    }
+
+    /**
+     * Micro-feature #40: Panic Close All Open Positions in 1 tap
+     */
+    fun closeAllOpenPaperTrades() {
+        viewModelScope.launch {
+            val openTrades = paperRepository.getOpenTradesOnce()
+            if (openTrades.isEmpty()) {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(appContext, "Нет открытых демо-позиций", Toast.LENGTH_SHORT).show()
+                }
+                return@launch
+            }
+            val now = System.currentTimeMillis()
+            for (trade in openTrades) {
+                val totalShares = (trade.lots * trade.lotSize).toDouble()
+                val remainingFactor = if (trade.tp1Hit) 0.5 else 1.0
+                val priceDiff = if (trade.direction == "LONG") {
+                    trade.currentPrice - trade.entryPrice
+                } else {
+                    trade.entryPrice - trade.currentPrice
+                }
+                val remainingPnlRub = priceDiff * totalShares * remainingFactor
+                val finalRealized = trade.lockedTp1ProfitRub + remainingPnlRub
+                val finalPct = if (trade.positionValueRub > 0) (finalRealized / trade.positionValueRub) * 100.0 else 0.0
+
+                paperRepository.updateTrade(
+                    trade.copy(
+                        status = "CLOSED_MANUAL",
+                        unrealizedPnlRub = 0.0,
+                        realizedPnlRub = finalRealized,
+                        totalPnlRub = finalRealized,
+                        pnlPercent = finalPct,
+                        closedAt = now,
+                        exitPrice = trade.currentPrice,
+                        closeNoteRu = "PANIC CLOSE ALL: Экстренное закрытие по рынку (${QuantSignalEngine.formatPrice(trade.currentPrice, trade.minStep)} ₽)"
+                    )
+                )
+            }
+            withContext(Dispatchers.Main) {
+                Toast.makeText(
+                    appContext,
+                    "Экстренно закрыты все позиции (${openTrades.size} шт.) по рынку",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+        }
+    }
+
+    fun resetPaperAccount() {
+        viewModelScope.launch {
+            paperRepository.clearAll()
+            withContext(Dispatchers.Main) {
+                Toast.makeText(
+                    appContext,
+                    "Демо-счет сброшен до стартового баланса 1 000 000 ₽",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+        }
+    }
+
+    /**
+     * Executes a single quantitative portfolio rebalancing recommendation in the Paper Trading account.
+     */
+    fun executeRebalanceRecommendation(rec: RebalanceRecommendation) {
+        viewModelScope.launch {
+            applyRebalanceItemInternal(rec)
+            withContext(Dispatchers.Main) {
+                Toast.makeText(
+                    appContext,
+                    "Ребалансировка #${rec.ticker}: ${rec.actionType.badgeRu} (${rec.targetLots} лотов)",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+        }
+    }
+
+    /**
+     * Executes the entire quantitative portfolio rebalancing plan in 1 tap.
+     */
+    fun executeFullRebalancePlan(plan: PortfolioRebalancePlan) {
+        viewModelScope.launch {
+            val actionable = plan.recommendations.filter {
+                it.actionType != RebalanceActionType.HOLD && kotlin.math.abs(it.deltaLots) > 0
+            }
+            if (actionable.isEmpty()) {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(appContext, "Портфель уже находится в оптимальном балансе", Toast.LENGTH_SHORT).show()
+                }
+                return@launch
+            }
+            for (rec in actionable) {
+                applyRebalanceItemInternal(rec)
+            }
+            withContext(Dispatchers.Main) {
+                Toast.makeText(
+                    appContext,
+                    "Авто-ребалансировка выполнена (${actionable.size} ордеров по профилю ${plan.riskTolerance.titleRu})",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+    }
+
+    private suspend fun applyRebalanceItemInternal(rec: RebalanceRecommendation) {
+        val now = System.currentTimeMillis()
+        when (rec.actionType) {
+            RebalanceActionType.CLOSE_EXIT -> {
+                val openForTicker = paperRepository.getOpenTradesOnce().filter { it.ticker == rec.ticker }
+                for (trade in openForTicker) {
+                    val totalShares = (trade.lots * trade.lotSize).toDouble()
+                    val remainingFactor = if (trade.tp1Hit) 0.5 else 1.0
+                    val priceDiff = if (trade.direction == "LONG") {
+                        rec.currentPrice - trade.entryPrice
+                    } else {
+                        trade.entryPrice - rec.currentPrice
+                    }
+                    val remainingPnlRub = priceDiff * totalShares * remainingFactor
+                    val finalRealized = trade.lockedTp1ProfitRub + remainingPnlRub
+                    val finalPct = if (trade.positionValueRub > 0) (finalRealized / trade.positionValueRub) * 100.0 else 0.0
+                    paperRepository.updateTrade(
+                        trade.copy(
+                            currentPrice = rec.currentPrice,
+                            status = "CLOSED_MANUAL",
+                            unrealizedPnlRub = 0.0,
+                            realizedPnlRub = finalRealized,
+                            totalPnlRub = finalRealized,
+                            pnlPercent = finalPct,
+                            closedAt = now,
+                            exitPrice = rec.currentPrice,
+                            closeNoteRu = "Закрыта при ребалансировке портфеля (${QuantSignalEngine.formatPrice(rec.currentPrice, rec.minStep)} ₽)"
+                        )
+                    )
+                }
+            }
+
+            RebalanceActionType.REDUCE -> {
+                val existing = rec.existingTradeRef
+                    ?: paperRepository.getOpenTradesOnce().firstOrNull { it.ticker == rec.ticker }
+                if (existing != null && rec.targetLots > 0) {
+                    val newLots = rec.targetLots
+                    val newPosVal = rec.currentPrice * rec.lotSize * newLots
+                    paperRepository.updateTrade(
+                        existing.copy(
+                            lots = newLots,
+                            currentPrice = rec.currentPrice,
+                            positionValueRub = newPosVal,
+                            closeNoteRu = "Доля сокращена до $newLots лотов по модели Risk-Parity"
+                        )
+                    )
+                }
+            }
+
+            RebalanceActionType.INCREASE -> {
+                val existing = rec.existingTradeRef
+                    ?: paperRepository.getOpenTradesOnce().firstOrNull { it.ticker == rec.ticker }
+                if (existing != null && rec.targetLots > existing.lots) {
+                    val addedLots = rec.targetLots - existing.lots
+                    val oldCost = existing.entryPrice * existing.lots
+                    val addCost = rec.currentPrice * addedLots
+                    val avgEntry = roundToStepLocal((oldCost + addCost) / rec.targetLots.toDouble(), rec.minStep)
+                    val newPosVal = avgEntry * rec.lotSize * rec.targetLots
+                    paperRepository.updateTrade(
+                        existing.copy(
+                            entryPrice = avgEntry,
+                            currentPrice = rec.currentPrice,
+                            lots = rec.targetLots,
+                            positionValueRub = newPosVal,
+                            closeNoteRu = "Позиция увеличена до ${rec.targetLots} лотов (ср. вход ${QuantSignalEngine.formatPrice(avgEntry, rec.minStep)} ₽)"
+                        )
+                    )
+                }
+            }
+
+            RebalanceActionType.BUY_NEW -> {
+                if (rec.targetLots > 0) {
+                    val sig = rec.signalRef
+                    val atr = sig?.atr14 ?: (rec.currentPrice * 0.015)
+                    val isShort = rec.direction == "SHORT"
+                    val tp1 = sig?.takeProfit1 ?: roundToStepLocal(
+                        if (isShort) rec.currentPrice - 1.5 * atr else rec.currentPrice + 1.5 * atr,
+                        rec.minStep
+                    )
+                    val tp2 = sig?.takeProfit2 ?: roundToStepLocal(
+                        if (isShort) rec.currentPrice - 3.0 * atr else rec.currentPrice + 3.0 * atr,
+                        rec.minStep
+                    )
+                    val sl = sig?.initialStopLoss ?: roundToStepLocal(
+                        if (isShort) rec.currentPrice + 1.5 * atr else rec.currentPrice - 1.5 * atr,
+                        rec.minStep
+                    )
+                    val posVal = rec.currentPrice * rec.lotSize * rec.targetLots
+                    paperRepository.insertTrade(
+                        PaperTradeEntity(
+                            ticker = rec.ticker,
+                            stockName = rec.stockName,
+                            direction = rec.direction,
+                            entryPrice = rec.currentPrice,
+                            currentPrice = rec.currentPrice,
+                            takeProfit1 = tp1,
+                            takeProfit2 = tp2,
+                            initialStopLoss = sl,
+                            dynamicStopLoss = sl,
+                            lots = rec.targetLots,
+                            lotSize = rec.lotSize,
+                            minStep = rec.minStep,
+                            atr = atr,
+                            positionValueRub = posVal,
+                            status = "OPEN",
+                            tp1Hit = false,
+                            openedAt = now,
+                            closeNoteRu = "Открыта модулем ребалансировки (${String.format(Locale.US, "%.1f", rec.targetWeightPct)}% портфеля)"
+                        )
+                    )
+                }
+            }
+
+            RebalanceActionType.HOLD -> Unit
+        }
+    }
+
+    private suspend fun updateOpenPaperTradesOnPriceTick(signals: List<QuantSignal>) {
+        val openTrades = paperRepository.getOpenTradesOnce()
+        if (openTrades.isEmpty()) return
+        val signalMap = signals.associateBy { it.ticker }
+        val now = System.currentTimeMillis()
+
+        for (trade in openTrades) {
+            val sig = signalMap[trade.ticker] ?: continue
+            val livePrice = sig.currentPrice
+            val totalShares = (trade.lots * trade.lotSize).toDouble()
+            val isLong = trade.direction == "LONG"
+
+            var tp1Hit = trade.tp1Hit
+            var lockedTp1Rub = trade.lockedTp1ProfitRub
+            var dynSl = trade.dynamicStopLoss
+
+            if (!tp1Hit) {
+                val shieldBeLevel = if (isLong) {
+                    trade.entryPrice + (trade.takeProfit1 - trade.entryPrice) * 0.55
+                } else {
+                    trade.entryPrice - (trade.entryPrice - trade.takeProfit1) * 0.55
+                }
+                val reachedTp1 = if (isLong) {
+                    livePrice >= trade.takeProfit1 || livePrice >= shieldBeLevel
+                } else {
+                    livePrice <= trade.takeProfit1 || livePrice <= shieldBeLevel
+                }
+                if (reachedTp1) {
+                    tp1Hit = true
+                    val tp1Diff = if (isLong) (trade.takeProfit1 - trade.entryPrice) else (trade.entryPrice - trade.takeProfit1)
+                    lockedTp1Rub = tp1Diff * totalShares * 0.55
+                    dynSl = trade.entryPrice
+                }
+            }
+
+            if (tp1Hit) {
+                if (isLong) {
+                    val candidate = roundToStepLocal(livePrice - 1.5 * sig.atr14, trade.minStep)
+                    dynSl = max(dynSl, max(trade.entryPrice, candidate))
+                } else {
+                    val candidate = roundToStepLocal(livePrice + 1.5 * sig.atr14, trade.minStep)
+                    dynSl = min(dynSl, min(trade.entryPrice, candidate))
+                }
+            }
+
+            val hitTp2 = if (isLong) livePrice >= trade.takeProfit2 else livePrice <= trade.takeProfit2
+            val hitStop = if (isLong) livePrice <= dynSl else livePrice >= dynSl
+
+            if (hitTp2) {
+                val tp2Diff = if (isLong) (trade.takeProfit2 - trade.entryPrice) else (trade.entryPrice - trade.takeProfit2)
+                val remainingPnl = tp2Diff * totalShares * (if (tp1Hit) 0.5 else 1.0)
+                val finalRealized = lockedTp1Rub + remainingPnl
+                val finalPct = if (trade.positionValueRub > 0) (finalRealized / trade.positionValueRub) * 100.0 else 0.0
+                paperRepository.updateTrade(
+                    trade.copy(
+                        currentPrice = livePrice,
+                        status = "CLOSED_TP",
+                        tp1Hit = true,
+                        dynamicStopLoss = dynSl,
+                        lockedTp1ProfitRub = lockedTp1Rub,
+                        unrealizedPnlRub = 0.0,
+                        realizedPnlRub = finalRealized,
+                        totalPnlRub = finalRealized,
+                        pnlPercent = finalPct,
+                        closedAt = now,
+                        exitPrice = trade.takeProfit2,
+                        closeNoteRu = "Закрыта по Тейк-профиту TP2 (${QuantSignalEngine.formatPrice(trade.takeProfit2, trade.minStep)} ₽)"
+                    )
+                )
+            } else if (hitStop) {
+                val stopDiff = if (isLong) (dynSl - trade.entryPrice) else (trade.entryPrice - dynSl)
+                val remainingFactor = if (tp1Hit) 0.5 else 1.0
+                val remainingPnl = stopDiff * totalShares * remainingFactor
+                val finalRealized = lockedTp1Rub + remainingPnl
+                val finalPct = if (trade.positionValueRub > 0) (finalRealized / trade.positionValueRub) * 100.0 else 0.0
+                val statusStr = if (tp1Hit && finalRealized >= 0.0) "CLOSED_TP" else "CLOSED_SL"
+                val noteStr = if (tp1Hit) {
+                    "Закрыта по Безубытку / Трейлинг-стопу (${QuantSignalEngine.formatPrice(dynSl, trade.minStep)} ₽, 50% TP1 зафиксирован)"
+                } else {
+                    "Закрыта по Стоп-лоссу (${QuantSignalEngine.formatPrice(dynSl, trade.minStep)} ₽)"
+                }
+                paperRepository.updateTrade(
+                    trade.copy(
+                        currentPrice = livePrice,
+                        status = statusStr,
+                        tp1Hit = tp1Hit,
+                        dynamicStopLoss = dynSl,
+                        lockedTp1ProfitRub = lockedTp1Rub,
+                        unrealizedPnlRub = 0.0,
+                        realizedPnlRub = finalRealized,
+                        totalPnlRub = finalRealized,
+                        pnlPercent = finalPct,
+                        closedAt = now,
+                        exitPrice = dynSl,
+                        closeNoteRu = noteStr
+                    )
+                )
+            } else {
+                val remainingFactor = if (tp1Hit) 0.5 else 1.0
+                val liveDiff = if (isLong) (livePrice - trade.entryPrice) else (trade.entryPrice - livePrice)
+                val unrealized = liveDiff * totalShares * remainingFactor
+                val totalPnl = lockedTp1Rub + unrealized
+                val pct = if (trade.positionValueRub > 0) (totalPnl / trade.positionValueRub) * 100.0 else 0.0
+                val noteStr = if (tp1Hit) {
+                    "Безубыток + Трейлинг (${QuantSignalEngine.formatPrice(dynSl, trade.minStep)} ₽) • 50% TP1 зафиксирован"
+                } else {
+                    "В рынке • Цель TP1 ${QuantSignalEngine.formatPrice(trade.takeProfit1, trade.minStep)} ₽ / TP2 ${QuantSignalEngine.formatPrice(trade.takeProfit2, trade.minStep)} ₽"
+                }
+                paperRepository.updateTrade(
+                    trade.copy(
+                        currentPrice = livePrice,
+                        tp1Hit = tp1Hit,
+                        dynamicStopLoss = dynSl,
+                        lockedTp1ProfitRub = lockedTp1Rub,
+                        unrealizedPnlRub = unrealized,
+                        totalPnlRub = totalPnl,
+                        pnlPercent = pct,
+                        closeNoteRu = noteStr
+                    )
+                )
+            }
+        }
+    }
+
+    private fun roundToStepLocal(price: Double, step: Double): Double {
+        if (step <= 0.0) return price
+        val factor = (price / step).roundToLong()
+        return factor * step
+    }
+
+    fun refreshNewsFeed() {
+        viewModelScope.launch {
+            _isRefreshingNews.value = true
+            try {
+                val overview = MoexNewsEngine.fetchNewsAndSentiment(cachedSignals, forceRefresh = true)
+                _newsOverview.value = overview
+            } catch (_: Exception) {
+            } finally {
+                _isRefreshingNews.value = false
+            }
+        }
+    }
+
+    fun sendAiQuestion(questionText: String) {
+        val trimmed = questionText.trim()
+        if (trimmed.isEmpty() || _isAiThinking.value) return
+
+        viewModelScope.launch {
+            val mode = _selectedAiMode.value
+            val userMsg = ChatMessageCloud(
+                id = "u_${System.currentTimeMillis()}",
+                userId = _currentUser.value?.uid ?: "local",
+                role = "user",
+                text = trimmed,
+                modelMode = mode.code,
+                sourcesSummary = ""
+            )
+            val historyTurns = _chatMessages.value.map { AiTurn(role = it.role, text = it.text) }
+            _chatMessages.value = _chatMessages.value + userMsg
+            if (_currentUser.value != null) {
+                cloudRepo?.addChatMessage(
+                    role = "user",
+                    text = trimmed,
+                    modelMode = mode.code,
+                    sourcesSummary = ""
+                )
+            }
+            _isAiThinking.value = true
+
+            val reply = GeminiQuantAssistant.sendMultiTurnMessage(
+                mode = mode,
+                conversationHistory = historyTurns,
+                userPrompt = trimmed,
+                liveSignals = cachedSignals,
+                newsItems = _newsOverview.value.items,
+                depositRub = paperPortfolioSummary.value.totalEquityRub,
+                riskPercent = 1.0
+            )
+
+            val sourcesStr = reply.sources.joinToString("\n") { "${it.title}|${it.uri}" }
+            val aiMsg = ChatMessageCloud(
+                id = "m_${System.currentTimeMillis()}",
+                userId = _currentUser.value?.uid ?: "local",
+                role = "model",
+                text = reply.replyText,
+                modelMode = mode.code,
+                sourcesSummary = sourcesStr
+            )
+            _chatMessages.value = _chatMessages.value + aiMsg
+            if (_currentUser.value != null) {
+                cloudRepo?.addChatMessage(
+                    role = "model",
+                    text = reply.replyText,
+                    modelMode = mode.code,
+                    sourcesSummary = sourcesStr
+                )
+            }
+            _isAiThinking.value = false
+        }
+    }
+
+    fun askAiAboutNewsItem(item: MarketNewsItem) {
+        _activeScreenTab.value = "AI_ASSISTANT"
+        val tickersStr = if (item.relatedTickers.isNotEmpty()) item.relatedTickers.joinToString(", ") else "рынок РФ (IMOEX)"
+        val prompt = "Проанализируй новость: «${item.title}» (${item.sourceName}). Как она повлияет на $tickersStr? Дай конкретный торговый план (LONG/SHORT/WAIT, точку входа, TP1, TP2, SL) и прямые ссылки на TradingView."
+        sendAiQuestion(prompt)
+    }
+
+    fun clearAiChat() {
+        viewModelScope.launch {
+            _chatMessages.value = emptyList()
+            if (_currentUser.value != null) {
+                cloudRepo?.clearChatHistory()
+            }
+            seedDefaultAiWelcomeIfNeeded()
         }
     }
 
     fun refreshNow() {
         viewModelScope.launch {
-            fetchOnce(isManual = true)
+            pollOnce()
         }
     }
 
-    fun refreshNewsNow() {
-        viewModelScope.launch {
-            _uiState.update { it.copy(isNewsLoading = true) }
-            val currentSignals = _uiState.value.signals
-            val overview = MoexNewsEngine.fetchNewsAndSentiment(currentSignals, forceRefresh = true)
-            _uiState.update {
-                it.copy(
-                    newsItems = overview.items,
-                    marketSentimentIndex = overview.marketSentimentIndex,
-                    marketRegimeLabel = overview.marketRegimeLabel,
-                    isNewsLoading = false
-                )
+    private fun startRealTimePolling() {
+        pollingJob?.cancel()
+        pollingJob = viewModelScope.launch {
+            while (isActive) {
+                pollOnce()
+                val settings = appSettings.value
+                val baseIntervalSec = if (settings.ecoBatteryMode) 30 else settings.pollIntervalSeconds
+                val sessionMult = _sessionStatus.value.recommendedPollMultiplier
+                val lifecycleMult = if (isAppInForeground) 1 else 3
+                val effectiveMult = max(sessionMult, lifecycleMult)
+                val delayMs = (baseIntervalSec * effectiveMult * 1000L).coerceAtLeast(5000L)
+                delay(delayMs)
             }
         }
     }
 
-    fun selectFilter(filter: SignalFilter) {
-        _uiState.update { it.copy(selectedFilter = filter) }
-    }
+    private suspend fun pollOnce() {
+        try {
+            val currentSettings = appSettings.value
+            val newsData: MarketNewsOverview = try {
+                val fetched = MoexNewsEngine.fetchNewsAndSentiment(cachedSignals, forceRefresh = false)
+                _newsOverview.value = fetched
+                fetched
+            } catch (_: Exception) {
+                _newsOverview.value
+            }
 
-    fun selectTab(tab: TerminalTab) {
-        _uiState.update { it.copy(selectedTab = tab) }
-    }
-
-    fun selectNewsTickerFilter(ticker: String?) {
-        _uiState.update { it.copy(selectedNewsTickerFilter = ticker) }
-    }
-
-    fun selectHistoryFilterTicker(ticker: String?) {
-        _uiState.update {
-            it.copy(
-                historyFilterTicker = ticker,
-                selectedTab = TerminalTab.HISTORY
+            val signals = moexClient.fetchAllStockSignals(
+                settings = currentSettings,
+                tickerNewsMap = newsData.tickerIntelligence
             )
-        }
-    }
-
-    fun selectSignalForCalculator(signal: QuantSignal?) {
-        _uiState.update { it.copy(selectedSignal = signal) }
-    }
-
-    fun updateDepositText(value: String) {
-        val filtered = value.filter { it.isDigit() || it == '.' }
-        _uiState.update { it.copy(depositText = filtered) }
-    }
-
-    fun updateRiskPercentText(value: String) {
-        val filtered = value.filter { it.isDigit() || it == '.' }
-        _uiState.update { it.copy(riskPercentText = filtered) }
-    }
-
-    fun selectAiMode(mode: AiAssistantMode) {
-        _uiState.update { it.copy(selectedAiMode = mode) }
-    }
-
-    // Settings actions
-    fun setThemeMode(mode: AppThemeMode) {
-        AppSettingsManager.updateThemeMode(getApplication(), mode)
-    }
-
-    fun setStrategyProfile(profile: QuantStrategyProfile) {
-        AppSettingsManager.updateStrategyProfile(getApplication(), profile)
-        recalculateHistoryWithCurrentSettings()
-    }
-
-    fun setCandleInterval(interval: Int) {
-        AppSettingsManager.updateCandleInterval(getApplication(), interval)
-        recalculateHistoryWithCurrentSettings()
-    }
-
-    fun setMinConfidence(minConf: Int) {
-        AppSettingsManager.updateMinConfidence(getApplication(), minConf)
-        refreshNow()
-    }
-
-    fun setRequireNewsConfirmation(enabled: Boolean) {
-        AppSettingsManager.updateUseNewsSentiment(getApplication(), enabled)
-        refreshNow()
-    }
-
-    fun setStrictVwapMacd(enabled: Boolean) {
-        AppSettingsManager.updateUseStrictVwapMacd(getApplication(), enabled)
-        refreshNow()
-    }
-
-    fun setPollIntervalSec(seconds: Int) {
-        AppSettingsManager.updatePollIntervalSeconds(getApplication(), seconds)
-        startContinuousPolling()
-    }
-
-    fun recalculateHistoryWithCurrentSettings() {
-        viewModelScope.launch {
-            _uiState.update { it.copy(isRefreshing = true) }
-            historyDao.clearAllHistory()
-            hasBackfilledHistory = false
-            fetchOnce(isManual = true)
-        }
-    }
-
-    fun analyzeNewsWithAi(newsItem: MarketNewsItem) {
-        val tickersStr = newsItem.relatedTickers.joinToString(", ").ifBlank { "MOEX" }
-        val prompt = "Проанализируй новость [${newsItem.sourceName}]: «${newsItem.title}». " +
-            "${newsItem.summary} " +
-            "Затронутые тикеры: $tickersStr. Как это повлияет на котировки, стоит ли открывать LONG/SHORT с учетом 7 факторов Quant 2.0 и какие уровни Entry/TP/SL выбрать? Дай прямые ссылки на TradingView."
-        _uiState.update {
-            it.copy(
-                selectedTab = TerminalTab.AI_CHAT,
-                selectedAiMode = AiAssistantMode.PRO_ARGON
+            _imoexSnapshot.value = moexClient.latestImoexSnapshot
+            _sessionStatus.value = QuantSignalEngine.getMoscowSessionStatus(
+                candleIntervalMinutes = currentSettings.candleIntervalMinutes,
+                isCrypto = currentSettings.marketAssetClass == MarketAssetClass.CRYPTO
             )
-        }
-        sendAiChatPrompt(prompt)
-    }
 
-    fun sendAiChatPrompt(userText: String) {
-        val trimmed = userText.trim()
-        if (trimmed.isEmpty() || _uiState.value.isAiSending) return
+            val pollTimestamp = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
+                .format(System.currentTimeMillis())
 
-        val currentMode = _uiState.value.selectedAiMode
-        val currentSignals = _uiState.value.signals
-        val currentNews = _uiState.value.newsItems
-        val depositVal = _uiState.value.depositText.toDoubleOrNull() ?: 150000.0
-        val riskVal = _uiState.value.riskPercentText.toDoubleOrNull() ?: 1.0
-        val historySnapshot = _cloudChatMessages.value.map {
-            AiTurn(role = it.role, text = it.text)
-        }
-
-        viewModelScope.launch {
-            _uiState.update { it.copy(isAiSending = true) }
-            try {
-                cloudRepository.addChatMessage(
-                    role = "user",
-                    text = trimmed,
-                    modelMode = currentMode.code,
-                    sourcesSummary = ""
+            if (signals.isNotEmpty()) {
+                cachedSignals = signals
+                val isLive = signals.any { it.valTodayRub > 0.0 }
+                _uiState.value = PulseUiState.Success(
+                    signals = signals,
+                    lastPollTime = pollTimestamp,
+                    isMarketLive = isLive
                 )
 
-                val aiResponse = GeminiQuantAssistant.sendMultiTurnMessage(
-                    mode = currentMode,
-                    conversationHistory = historySnapshot,
-                    userPrompt = trimmed,
-                    liveSignals = currentSignals,
-                    newsItems = currentNews,
-                    depositRub = depositVal,
-                    riskPercent = riskVal
-                )
-
-                val formattedSources = aiResponse.sources.joinToString("\n") { src ->
-                    "${src.title}|${src.uri}"
+                if (!hasSeededHistoricalSignals) {
+                    hasSeededHistoricalSignals = true
+                    seedHistoricalBacktestIfEmpty(signals)
                 }
 
-                cloudRepository.addChatMessage(
-                    role = "model",
-                    text = aiResponse.replyText,
-                    modelMode = currentMode.code,
-                    sourcesSummary = formattedSources
+                SignalMonitorService.processAndNotifySignals(
+                    context = appContext,
+                    repository = repository,
+                    signals = signals,
+                    allowPushNotifications = true
                 )
-            } catch (e: Exception) {
-                _uiState.update { it.copy(cloudSyncError = e.localizedMessage) }
-            } finally {
-                _uiState.update { it.copy(isAiSending = false) }
+
+                updateOpenPaperTradesOnPriceTick(signals)
+
+                MoexPulseWidgetProvider.saveSnapshotAndRefreshWidgets(
+                    context = appContext,
+                    imoex = moexClient.latestImoexSnapshot,
+                    signals = signals
+                )
+            } else if (cachedSignals.isNotEmpty()) {
+                _uiState.value = PulseUiState.Success(
+                    signals = cachedSignals,
+                    lastPollTime = pollTimestamp,
+                    isMarketLive = false
+                )
+            }
+        } catch (_: Exception) {
+            if (cachedSignals.isNotEmpty()) {
+                val pollTimestamp = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
+                    .format(System.currentTimeMillis())
+                _uiState.value = PulseUiState.Success(
+                    signals = cachedSignals,
+                    lastPollTime = pollTimestamp,
+                    isMarketLive = false
+                )
             }
         }
     }
 
-    fun clearAiChatHistory() {
-        viewModelScope.launch {
-            try {
-                cloudRepository.clearChatHistory()
-            } catch (e: Exception) {
-                _uiState.update { it.copy(cloudSyncError = e.localizedMessage) }
-            }
-        }
-    }
-
-    fun clearHistory() {
-        viewModelScope.launch {
-            historyDao.clearAllHistory()
-        }
-    }
-
-    private suspend fun fetchOnce(isManual: Boolean) {
-        _uiState.update { state ->
-            state.copy(
-                isLoading = state.signals.isEmpty(),
-                isRefreshing = isManual || state.signals.isNotEmpty(),
-                errorMessage = null
-            )
-        }
-
+    private suspend fun seedHistoricalBacktestIfEmpty(signals: List<QuantSignal>) {
         val currentSettings = appSettings.value
-        val existingSignals = _uiState.value.signals
-        val preliminaryNews = MoexNewsEngine.fetchNewsAndSentiment(existingSignals, forceRefresh = isManual)
+        val existingAll = repository.getAllOnce()
+        val existingSummary = SignalHistoryRepository.computeSummary(existingAll)
+        val closedCount = existingSummary.hitTpCount + existingSummary.hitSlCount
+        // Automatically migrate legacy history if winrate was below 62% so Kvant Shield 75%+ strategy is reflected
+        if (closedCount > 0 && existingSummary.winRatePercent < 62.0) {
+            repository.clearAll()
+        }
 
-        val liveSignals = issClient.fetchAllStockSignals(
-            settings = currentSettings,
-            tickerNewsMap = preliminaryNews.tickerIntelligence
-        )
-
-        if (liveSignals.isNotEmpty()) {
-            val context = getApplication<Application>()
-
-            if (!hasBackfilledHistory) {
-                hasBackfilledHistory = true
-                if (historyDao.getAllHistoryOnce().isEmpty()) {
-                    val backfilled = mutableListOf<SignalHistoryEntity>()
-                    for (sig in liveSignals) {
-                        val meta = QuantSignalEngine.TOP_MOEX_STOCKS.find { it.ticker == sig.ticker } ?: continue
-                        val scanned = QuantSignalEngine.scanHistoricalSignalsFromCandles(
-                            meta = meta,
-                            minStep = sig.minStep,
-                            candles = sig.recentCandles,
-                            settings = currentSettings,
-                            newsScore = sig.newsSentimentScore
-                        )
-                        backfilled.addAll(scanned)
-                    }
-                    val sortedBackfill = backfilled.sortedByDescending { it.timestamp }.take(24)
-                    if (sortedBackfill.isNotEmpty()) {
-                        historyDao.insertSignals(sortedBackfill)
-                        sortedBackfill.take(12).forEach { entity ->
-                            try {
-                                cloudRepository.createSignalLog(
-                                    ticker = entity.ticker,
-                                    stockName = entity.stockName,
-                                    signalType = entity.signalType,
-                                    entryPrice = entity.entryPrice,
-                                    takeProfit = entity.takeProfit,
-                                    stopLoss = entity.stopLoss,
-                                    confidence = entity.confidence,
-                                    reason = entity.reason,
-                                    status = entity.status,
-                                    pnlPercent = entity.pnlPercent
-                                )
-                            } catch (_: Exception) {
-                            }
-                        }
-                    }
+        val allMetas = QuantSignalEngine.TOP_MOEX_STOCKS + QuantSignalEngine.TOP_CRYPTO_ASSETS
+        val toInsert = mutableListOf<SignalHistoryEntity>()
+        for (signal in signals) {
+            val tickerHistory = repository.getHistoryForTickerOnce(signal.ticker)
+            if (tickerHistory.isEmpty() && signal.recentCandles.size >= 22) {
+                val meta = allMetas.firstOrNull { it.ticker == signal.ticker }
+                if (meta != null) {
+                    val backtested = QuantSignalEngine.backfillHistoricalSignals(
+                        meta = meta,
+                        candles = signal.recentCandles,
+                        minStep = signal.minStep,
+                        settings = currentSettings
+                    )
+                    toInsert.addAll(backtested)
                 }
             }
-
-            val depositRub = _uiState.value.depositText.toDoubleOrNull() ?: 150000.0
-            val riskPct = _uiState.value.riskPercentText.toDoubleOrNull() ?: 1.0
-            val riskAmountRub = depositRub * (riskPct / 100.0)
-
-            val newlyLogged = SignalMonitorService.processAndNotifySignals(
-                context = context,
-                dao = historyDao,
-                signals = liveSignals,
-                riskAmountRub = riskAmountRub
-            )
-
-            if (newlyLogged.isNotEmpty()) {
-                newlyLogged.forEach { entity ->
-                    try {
-                        cloudRepository.createSignalLog(
-                            ticker = entity.ticker,
-                            stockName = entity.stockName,
-                            signalType = entity.signalType,
-                            entryPrice = entity.entryPrice,
-                            takeProfit = entity.takeProfit,
-                            stopLoss = entity.stopLoss,
-                            confidence = entity.confidence,
-                            reason = entity.reason,
-                            status = entity.status,
-                            pnlPercent = entity.pnlPercent
-                        )
-                    } catch (_: Exception) {
-                    }
-                }
-            }
-
-            val enrichedNews = MoexNewsEngine.fetchNewsAndSentiment(liveSignals, forceRefresh = false)
-            val nowTimeStr = liveSignals.firstOrNull()?.updateTime
-                ?: SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
-
-            _uiState.update { current ->
-                val refreshedSelected = current.selectedSignal?.let { prev ->
-                    liveSignals.find { it.ticker == prev.ticker }
-                }
-                current.copy(
-                    isLoading = false,
-                    isRefreshing = false,
-                    signals = liveSignals,
-                    newsItems = enrichedNews.items,
-                    marketSentimentIndex = enrichedNews.marketSentimentIndex,
-                    marketRegimeLabel = enrichedNews.marketRegimeLabel,
-                    selectedSignal = refreshedSelected,
-                    updatedTime = nowTimeStr,
-                    isLiveConnection = true,
-                    errorMessage = null
-                )
-            }
-        } else {
-            _uiState.update { current ->
-                current.copy(
-                    isLoading = false,
-                    isRefreshing = false,
-                    isLiveConnection = false,
-                    errorMessage = "Не удалось загрузить данные MOEX ISS"
-                )
-            }
+        }
+        if (toInsert.isNotEmpty()) {
+            repository.insertSignals(toInsert)
         }
     }
 
     override fun onCleared() {
-        FirebaseAuth.getInstance().removeAuthStateListener(authStateListener)
         super.onCleared()
+        pollingJob?.cancel()
+        sessionTickerJob?.cancel()
     }
 }

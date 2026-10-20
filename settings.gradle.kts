@@ -22,6 +22,6 @@ dependencyResolutionManagement {
   }
 }
 
-rootProject.name = "Moex Pulse"
+rootProject.name = "Kvant"
 
 include(":app")

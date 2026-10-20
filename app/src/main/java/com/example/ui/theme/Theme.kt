@@ -1,11 +1,12 @@
 package com.example.ui.theme
 
-import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Shapes
 import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.unit.dp
 import com.example.data.AppThemeMode
 
 private val MoexDarkColorScheme = darkColorScheme(
@@ -26,42 +27,24 @@ private val MoexDarkColorScheme = darkColorScheme(
     outline = SoftObsidianDarkPalette.border
 )
 
-private val MoexLightColorScheme = lightColorScheme(
-    primary = AlpineDaylightPalette.signalLong,
-    onPrimary = AlpineDaylightPalette.surface,
-    primaryContainer = AlpineDaylightPalette.signalLongDim,
-    onPrimaryContainer = AlpineDaylightPalette.signalLong,
-    secondary = AlpineDaylightPalette.accentCyan,
-    onSecondary = AlpineDaylightPalette.surface,
-    tertiary = AlpineDaylightPalette.signalWait,
-    error = AlpineDaylightPalette.signalShort,
-    background = AlpineDaylightPalette.bg,
-    onBackground = AlpineDaylightPalette.textPrimary,
-    surface = AlpineDaylightPalette.surface,
-    onSurface = AlpineDaylightPalette.textPrimary,
-    surfaceVariant = AlpineDaylightPalette.surfaceElevated,
-    onSurfaceVariant = AlpineDaylightPalette.textSecondary,
-    outline = AlpineDaylightPalette.border
+val MoexShapes = Shapes(
+    extraSmall = RoundedCornerShape(10.dp),
+    small = RoundedCornerShape(12.dp),
+    medium = RoundedCornerShape(16.dp),
+    large = RoundedCornerShape(20.dp),
+    extraLarge = RoundedCornerShape(26.dp)
 )
 
 @Composable
 fun MoexPulseTheme(
-    themeMode: AppThemeMode = AppThemeMode.DARK,
+    @Suppress("UNUSED_PARAMETER") themeMode: AppThemeMode = AppThemeMode.DARK,
     content: @Composable () -> Unit
 ) {
-    val systemDark = isSystemInDarkTheme()
-    val useDark = when (themeMode) {
-        AppThemeMode.DARK -> true
-        AppThemeMode.LIGHT -> false
-        AppThemeMode.SYSTEM -> systemDark
-    }
-    val palette = if (useDark) SoftObsidianDarkPalette else AlpineDaylightPalette
-    val colorScheme = if (useDark) MoexDarkColorScheme else MoexLightColorScheme
-
-    CompositionLocalProvider(LocalAppPalette provides palette) {
+    CompositionLocalProvider(LocalAppPalette provides SoftObsidianDarkPalette) {
         MaterialTheme(
-            colorScheme = colorScheme,
+            colorScheme = MoexDarkColorScheme,
             typography = Typography,
+            shapes = MoexShapes,
             content = content
         )
     }

@@ -30,44 +30,47 @@ data class AppPalette(
     val waitColor: Color get() = signalWait
     val waitDim: Color get() = signalWaitDim
     val cyan: Color get() = accentCyan
-    val cyanDim: Color get() = if (isDark) Color(0xFF0C2D48) else Color(0xFFE0F2FE)
+    val cyanDim: Color get() = Color(0xFF1C1C1C)
+
+    // Unified aliases for PRO components
+    val bgPrimary: Color get() = bg
+    val bgCard: Color get() = surface
+    val bgElevated: Color get() = surfaceElevated
+    val borderCard: Color get() = border
+    val longGreen: Color get() = signalLong
+    val longGreenDim: Color get() = signalLongDim
+    val shortRed: Color get() = signalShort
+    val shortRedDim: Color get() = signalShortDim
+    val amberWait: Color get() = signalWait
+    val amberWaitDim: Color get() = signalWaitDim
+    val cyanAccent: Color get() = accentCyan
 }
 
+/**
+ * Pure Institutional Noir Monochrome (Black & White) Palette.
+ * Engineered for Samsung AMOLED / S25 displays with pure #000000 pitch black,
+ * stark #FFFFFF primary accents, and precision grayscale hierarchy.
+ */
 val SoftObsidianDarkPalette = AppPalette(
     isDark = true,
-    bg = Color(0xFF0E1420),
-    surface = Color(0xFF161F30),
-    surfaceElevated = Color(0xFF1E293B),
-    border = Color(0xFF2B3A52),
-    signalLong = Color(0xFF10B981),
-    signalLongDim = Color(0xFF0F2E28),
-    signalShort = Color(0xFFF43F5E),
-    signalShortDim = Color(0xFF361726),
-    signalWait = Color(0xFFF59E0B),
-    signalWaitDim = Color(0xFF332612),
-    accentCyan = Color(0xFF38BDF8),
-    textPrimary = Color(0xFFF1F5F9),
-    textSecondary = Color(0xFF94A3B8),
-    textMuted = Color(0xFF64748B)
+    bg = Color(0xFF000000),
+    surface = Color(0xFF0B0B0B),
+    surfaceElevated = Color(0xFF141414),
+    border = Color(0xFF2A2A2A),
+    signalLong = Color(0xFFFFFFFF),
+    signalLongDim = Color(0xFF1F1F1F),
+    signalShort = Color(0xFF9E9E9E),
+    signalShortDim = Color(0xFF141414),
+    signalWait = Color(0xFF707070),
+    signalWaitDim = Color(0xFF101010),
+    accentCyan = Color(0xFFEDEDED),
+    textPrimary = Color(0xFFFFFFFF),
+    textSecondary = Color(0xFFA6A6A6),
+    textMuted = Color(0xFF686868)
 )
 
-val AlpineDaylightPalette = AppPalette(
-    isDark = false,
-    bg = Color(0xFFF3F6FB),
-    surface = Color(0xFFFFFFFF),
-    surfaceElevated = Color(0xFFEAF0F8),
-    border = Color(0xFFD5E0EE),
-    signalLong = Color(0xFF059669),
-    signalLongDim = Color(0xFFD1FAE5),
-    signalShort = Color(0xFFE11D48),
-    signalShortDim = Color(0xFFFFE4E6),
-    signalWait = Color(0xFFD97706),
-    signalWaitDim = Color(0xFFFEF3C7),
-    accentCyan = Color(0xFF0284C7),
-    textPrimary = Color(0xFF0F172A),
-    textSecondary = Color(0xFF475569),
-    textMuted = Color(0xFF64748B)
-)
+// Keep alias pointing to Monochrome Dark Palette so the entire application is 100% monochrome everywhere
+val AlpineDaylightPalette = SoftObsidianDarkPalette
 
 val LocalAppPalette = staticCompositionLocalOf { SoftObsidianDarkPalette }
 

@@ -14,11 +14,14 @@ import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.junit.After
+import org.junit.Assume.assumeTrue
 import org.junit.Before
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.LooperMode
+import java.net.InetSocketAddress
+import java.net.Socket
 
 @RunWith(RobolectricTestRunner::class)
 @Config(manifest = Config.NONE)
@@ -29,8 +32,20 @@ abstract class FirestoreEmulatorTestBase {
     protected lateinit var auth: FirebaseAuth
     protected lateinit var databaseId: String
 
+    private fun isEmulatorRunning(): Boolean {
+        return try {
+            Socket().use { socket ->
+                socket.connect(InetSocketAddress(EMULATOR_HOST, FIRESTORE_PORT), 250)
+                true
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     @Before
     open fun setUpFirebase() {
+        assumeTrue("Skipping Firestore emulator test because local emulator is not active", isEmulatorRunning())
         val context = ApplicationProvider.getApplicationContext<Context>()
         val resId = context.resources.getIdentifier("firestore_database_id", "string", context.packageName)
         databaseId = if (resId != 0) context.getString(resId) else "ai-studio-android-moexpuls-2bb0c575-4a18-4e5a-8618-3eb88e71e3f7"
@@ -63,7 +78,9 @@ abstract class FirestoreEmulatorTestBase {
 
     @After
     open fun tearDownFirebase() {
-        auth.signOut()
+        if (this::auth.isInitialized) {
+            auth.signOut()
+        }
     }
 
     protected suspend fun signInTestUser(email: String): String = withContext(Dispatchers.IO) {
